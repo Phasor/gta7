@@ -11,7 +11,7 @@ const SLAB = 0.15;   // concrete base
 const HEIGHT = 3.2;  // floor to ceiling
 
 // A sign: text painted on a coloured board.
-function label(text, small, background, ink, width = 512, height = 128) {
+export function label(text, small, background, ink, width = 512, height = 128) {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;

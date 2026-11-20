@@ -35,7 +35,7 @@ export function speckle(ctx, size, count, alpha) {
   }
 }
 
-function makeMaterials() {
+export function makeMaterials() {
   const stucco = new THREE.MeshStandardMaterial({
     roughness: 0.95,
     map: canvasTexture(128, (ctx, size) => {
@@ -346,7 +346,7 @@ export function block(parent, material, w, h, d, x, y, z) {
 }
 
 // A low roof that slopes down on all four sides, with its ridge along X.
-function hipRoof(material, length, depth, height) {
+export function hipRoof(material, length, depth, height) {
   const L = length / 2, D = depth / 2, R = Math.max(0, L - D); // R: half the ridge's length
   const A = [-L, 0, D], B = [L, 0, D], C = [L, 0, -D], E = [-L, 0, -D], P = [-R, height, 0], Q = [R, height, 0];
   const positions = [], uvs = [];
@@ -374,7 +374,7 @@ function hipRoof(material, length, depth, height) {
 
 // A window on a wall: frame, dark glass, a cross bar, and shutters either side.
 // facing: 'front' (+Z), 'back' (-Z), 'right' (+X) or 'left' (-X).
-function addWindow(parent, m, facing, along, width, height, sill, wallAt, shutters = true) {
+export function addWindow(parent, m, facing, along, width, height, sill, wallAt, shutters = true) {
   const window = new THREE.Group();
   block(window, m.trim, width + 0.16, height + 0.16, 0.08, 0, 0, 0);
   block(window, m.glass, width, height, 0.1, 0, 0, 0);
@@ -392,7 +392,7 @@ function addWindow(parent, m, facing, along, width, height, sill, wallAt, shutte
   parent.add(window);
 }
 
-function addPalm(parent, m, x, z, height, lean) {
+export function addPalm(parent, m, x, z, height, lean) {
   const palm = new THREE.Group();
   palm.position.set(x, 0, z);
   palm.rotation.y = Math.random() * Math.PI * 2;

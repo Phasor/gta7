@@ -7,6 +7,8 @@ import { createHouse, updateHouse, toggleFridge, nearFridge } from './house.js';
 import { createIguanas, updateIguanas } from './iguana.js';
 import { createStore, updateStore } from './store.js';
 import { createRoad } from './road.js';
+import { createGasStation, updateGasStation } from './gasstation.js';
+import { createNeighbourhood } from './neighbourhood.js';
 import { createTruck, updateTruck, setEngine } from './truck.js';
 import { rayToObstacle, ceilingAt, roomLimit } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun } from './gun.js';
@@ -99,6 +101,12 @@ const store = createStore(scene, 24, -24);
 
 // The street running past both, with the game starting on its far pavement.
 createRoad(scene, -9, 24, -15.2);
+
+// The petrol station, further along the street past the shop.
+const gasStation = createGasStation(scene, 54, -19);
+
+// Ten more houses along the street, all different.
+createNeighbourhood(scene);
 
 // The pickup truck, parked in the garage facing the door. F gets in and out.
 const truckStart = (new URLSearchParams(location.search).get('truckat') || '-4,-22.6,0').split(',').map(Number); // ?truckat=x,z,heading
@@ -250,7 +258,8 @@ const aimDir = new THREE.Vector3(), aimPoint = new THREE.Vector3();
 // ?npc stands one person right in front of the crosshair, for checking shooting works
 // (a woman, or a man with ?npc&man).
 const npcs = createNpcs(scene, MAP_SIZE / 2, testView.has('npc') ? new THREE.Vector3(0.75, 0, -5) : null, testView.has('man') ? 'man' : 'woman',
-  { x: 20.65, z: -22.1, facing: Math.PI / 2 }); // the cashier, behind the counter in Sunny's Mart
+  [{ x: 20.65, z: -22.1, facing: Math.PI / 2 },   // the cashier behind the counter in Sunny's Mart
+   { x: 51.0, z: -26.6, facing: Math.PI / 2 }]);   // and the one in the Gator Gas kiosk
 if (testView.has('npcpace')) npcDebug.pace = Number(testView.get('npcpace')); // hold NPCs in walk (1) or run (2)
 let hitFlash = 0; // the crosshair turns red for a moment when a shot hits someone
 
@@ -368,6 +377,7 @@ function step(dt) {
   updateHouse(house, player.group.position, dt);
   updateIguanas(iguanas, player.group.position, dt);
   updateStore(store, player.group.position, dt);
+  updateGasStation(gasStation, player.group.position, dt);
   const byTruck = !driving && Math.hypot(player.group.position.x - truck.group.position.x, player.group.position.z - truck.group.position.z) < 3.4;
   const byFridge = !driving && nearFridge(house, player.group.position);
   usePrompt.textContent = byTruck ? 'Press F to drive the truck' : 'Press E to open or close the fridge';

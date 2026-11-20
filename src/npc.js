@@ -136,15 +136,16 @@ function wander(npc, near, far) {
 
 // testSpot: if given, the first NPC stands still there (used for checking things work).
 // testKind: 'man' or 'woman', which of them that first NPC should be.
-// cashierSpot: { x, z, facing } puts a shopkeeper there. He never leaves his spot;
-// he just stands at the till and turns his head to watch the player.
-export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpot) {
+// cashierSpots: a list of { x, z, facing }, each of which gets a shopkeeper. They
+// never leave their spot; they just stand at the till and turn their head to watch the player.
+export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots) {
   const npcs = [];
   const loader = new GLTFLoader();
   Promise.all([loadKind(loader, 'woman'), loadKind(loader, 'man')]).then(([woman, man]) => {
     const kinds = { woman, man };
 
-    if (cashierSpot) {
+    npcs.cashiers = [];
+    for (const cashierSpot of cashierSpots || []) {
       const model = cloneSkinned(man.scene);
       model.traverse((part) => { if (part.isMesh) part.material = recolour(part.material, 330); });
       const group = new THREE.Group();
@@ -156,7 +157,7 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpot) {
       const mixer = new THREE.AnimationMixer(model);
       mixer.clipAction(man.clips[0]).play(); // standing idle
       const bones = [model.getObjectByName('Neck'), model.getObjectByName('Head')];
-      npcs.cashier = { group, mixer, bones, clean: bones.map((bone) => bone.quaternion.clone()), look: 0 };
+      npcs.cashiers.push({ group, mixer, bones, clean: bones.map((bone) => bone.quaternion.clone()), look: 0 });
       addObstacle(cashierSpot.x - 0.3, cashierSpot.x + 0.3, cashierSpot.z - 0.3, cashierSpot.z + 0.3, 2.1);
     }
     const people = testKind === 'man' ? [PEOPLE[1], PEOPLE[0], ...PEOPLE.slice(2)] : PEOPLE;
@@ -267,8 +268,7 @@ function poseStrike(npc, playerPosition, t) {
 // onStrike(kind, npc) is called at the moment a slap or punch lands on the player.
 export function updateNpcs(npcs, playerPosition, dt, onStrike) {
   // The cashier: stands still, and his head follows the player round the shop.
-  const cashier = npcs.cashier;
-  if (cashier) {
+  for (const cashier of npcs.cashiers || []) {
     cashier.bones.forEach((bone, i) => bone.quaternion.copy(cashier.clean[i])); // undo last frame's head turn
     cashier.mixer.update(dt);
     cashier.bones.forEach((bone, i) => cashier.clean[i].copy(bone.quaternion));
