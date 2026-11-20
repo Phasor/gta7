@@ -21,6 +21,8 @@ const LAYERS = [
 
 // Rectangles where no grass grows (under buildings, driveways and paths).
 // Each is (min x, min z, max x, max z); whoever builds something fills one in.
+// A lake where no grass grows: (centre x, centre z, radius). Its outline matches shoreRadius() in world.js.
+export const pond = new THREE.Vector4();
 export const clearings = Array.from({ length: 40 }, () => new THREE.Vector4());
 
 const SEGMENTS = 4; // pieces per blade: more pieces give a smoother curve
@@ -72,6 +74,7 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
       tallness: { value: height },
       time: { value: 0 },
       clearings: { value: clearings },
+      pond: { value: pond },
       sunDir: { value: sunDirection.clone().normalize() },
       sunColor: { value: new THREE.Color(PALETTE.sunLight) },
       rootColor: { value: new THREE.Color(PALETTE.grassRoot) },
@@ -86,6 +89,7 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
       uniform vec4 fadeRange;
       uniform float areaSize, tallness, time;
       uniform vec4 clearings[40];
+      uniform vec4 pond;
       attribute vec2 spot;
       attribute vec4 rnd;
       varying float vHeight;   // 0 at the root, 1 at the tip
@@ -128,6 +132,14 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
         // On bare dirt only a few stunted, dried-out blades survive.
         float dirt = dirtAmount(ground);
         tall *= 1.0 - dirt * mix(0.8, 1.0, sizeB);
+
+        // Nothing grows in the lake or on its muddy bank.
+        if (pond.z > 0.0) {
+          vec2 fromPond = ground - pond.xy;
+          float around = atan(fromPond.y, fromPond.x);
+          float bank = pond.z * (1.0 + 0.18 * sin(3.0 * around + 1.0) + 0.1 * sin(5.0 * around)) * 1.06;
+          if (length(fromPond) < bank) tall = 0.0;
+        }
 
         // Nothing grows where something has been built.
         for (int i = 0; i < 40; i++) {

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { createPlayer, updatePlayer, crouchDrop, knockDown } from './player.js';
+import { createPlayer, updatePlayer, crouchDrop, knockDown, sitPlayer, SIT_DROP, HIP_HEIGHT } from './player.js';
 import { PALETTE, createSky, createComposer } from './look.js';
 import { createGrass, updateGrass } from './grass.js';
 import { addDirt } from './terrain.js';
@@ -9,6 +9,7 @@ import { createStore, updateStore } from './store.js';
 import { createRoad } from './road.js';
 import { createGasStation, updateGasStation } from './gasstation.js';
 import { createNeighbourhood } from './neighbourhood.js';
+import { createLake, updateLake, boatNear, landingSpot, SEAT } from './lake.js';
 import { createTruck, updateTruck, setEngine } from './truck.js';
 import { rayToObstacle, ceilingAt, roomLimit } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun } from './gun.js';
@@ -108,6 +109,10 @@ const gasStation = createGasStation(scene, 54, -19);
 // Ten more houses along the street, all different.
 createNeighbourhood(scene);
 
+// The lake, at the left-hand end of the street, with boats to take out.
+const lake = createLake(scene, -178, -98, 76, scene.fog, SUN_OFFSET, -9);
+let boating = null; // the boat the player is in, if any
+
 // The pickup truck, parked in the garage facing the door. F gets in and out.
 const truckStart = (new URLSearchParams(location.search).get('truckat') || '-4,-22.6,0').split(',').map(Number); // ?truckat=x,z,heading
 const truck = createTruck(scene, renderer, truckStart[0], truckStart[1], truckStart[2]);
@@ -115,6 +120,23 @@ const speedo = document.getElementById('speed');
 let driving = false;
 function toggleDriving() {
   const here = player.group.position, there = truck.group.position;
+  // Boats: F gets in when next to one, and out again at the jetty or the bank.
+  if (boating) {
+    const spot = Math.abs(boating.speed) < 2 ? landingSpot(lake, boating) : null;
+    if (!spot) return;
+    setEngine(boating, false);
+    boating.speed = 0;
+    boating = null;
+    here.copy(spot);
+    return;
+  }
+  const boat = !driving && player.downTime < 0 ? boatNear(lake, here) : null;
+  if (boat) {
+    boating = boat;
+    setEngine(boat, true);
+    gun.equipped = false;
+    return;
+  }
   if (driving) {
     if (Math.abs(truck.speed) > 2) return; // too fast to jump out
     driving = false;
@@ -220,10 +242,10 @@ function updateCamera() {
   const rx = Math.cos(cam.yaw), rz = -Math.sin(cam.yaw); // camera right
 
   // Point the camera looks at: the character's upper back, nudged sideways.
-  const height = driving ? 1.9 : cam.height - crouchDrop(player); // camera dips when crouching
+  const height = boating ? 1.9 : driving ? 1.9 : cam.height - crouchDrop(player); // camera dips when crouching
   // Aiming pulls the camera in closer and further over the shoulder.
-  const shoulder = driving ? 0 : cam.shoulder + 0.2 * player.aim;
-  const distance = driving ? cam.distance * 2.1 : cam.distance * (1 - 0.4 * player.aim); // further back to fit the truck in
+  const shoulder = driving || boating ? 0 : cam.shoulder + 0.2 * player.aim;
+  const distance = boating ? cam.distance * 1.7 : driving ? cam.distance * 2.1 : cam.distance * (1 - 0.4 * player.aim); // further back to fit the truck in
   lookAt.set(p.x + rx * shoulder, p.y + height, p.z + rz * shoulder);
 
   const flat = Math.cos(cam.pitch) * distance;
@@ -269,7 +291,7 @@ if (testView.has('stay')) player.freezeDown = Number(testView.get('stay')) || 1;
 let hurt = 0;
 const hurtOverlay = document.getElementById('hurt');
 function onStrike(kind, npc) {
-  if (driving) return; // safe inside the truck
+  if (driving || boating) return; // safe inside the truck or out on the water
   player.slap = 1;
   hurt = 1;
   cam.yaw += kind === 'punch' ? 0.2 : 0.1;
@@ -324,7 +346,7 @@ function step(dt) {
   // Shooting raises the arm first, then fires once it is up.
   aimTimer -= dt;
   if (shotQueued || testView.has('fire')) aimTimer = 0.9;
-  input.aim = !driving && gun.equipped && (aimHeld || aimTimer > 0 || testView.has('aim'));
+  input.aim = !driving && !boating && gun.equipped && (aimHeld || aimTimer > 0 || testView.has('aim'));
   input.aimPoint = aimPoint;
   input.kick = gun.kick;
   if ((shotQueued || testView.has('fire')) && player.aim > 0.8 && fireGun(gun, aimPoint, hitsGround)) {
@@ -347,10 +369,28 @@ function step(dt) {
     provokeNpc(npcs[0]);
   }
   if (!gun.equipped || player.downTime >= 0) shotQueued = false; // no shooting while knocked down
-  crosshair.style.display = gun.equipped && !driving ? 'block' : 'none';
+  crosshair.style.display = gun.equipped && !driving && !boating ? 'block' : 'none';
 
   if (testView.has('drive') && !driving && player.bones) toggleDriving(); // ?drive starts at the wheel with the pedal down
-  if (driving) {
+  if (testView.has('sail') && !boating && player.bones) { boating = lake.boats[0]; } // ?sail starts in a boat with the throttle open
+  updateLake(lake, time, dt, boating, { throttle: testView.has('sail') ? 1 : input.z, steer: testView.has('sail') ? 0.25 : -input.x });
+  if (boating) {
+    // He stands in the boat, which carries him (and the camera) along.
+    // He sits on the stern bench with a hand on the tiller.
+    const at = boating.group.position;
+    player.group.position.set(
+      at.x + Math.sin(boating.heading) * SEAT.back,
+      at.y + SEAT.height + 0.1 - (HIP_HEIGHT - SIT_DROP),
+      at.z + Math.cos(boating.heading) * SEAT.back
+    );
+    player.group.rotation.set(0, boating.heading, 0);
+    sitPlayer(player, dt);
+    if (Math.abs(boating.speed) > 1) {
+      let turn = boating.heading + Math.PI - cam.yaw;
+      turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+      cam.yaw += turn * Math.min(1, 2 * dt);
+    }
+  } else if (driving) {
     updateTruck(truck, { throttle: testView.has('drive') ? 1 : input.z, steer: -input.x, handbrake: input.jump }, dt, MAP_SIZE / 2);
     player.group.position.copy(truck.group.position); // the rest of the world follows the truck
     // The camera swings round to stay behind the truck.
@@ -372,18 +412,20 @@ function step(dt) {
   } else {
     updatePlayer(player, input, cam.yaw, dt, MAP_SIZE / 2);
   }
-  speedo.style.display = driving ? 'block' : 'none';
-  if (driving) speedo.textContent = `${Math.round(Math.abs(truck.speed) * 2.237)} mph`;
+  speedo.style.display = driving || boating ? 'block' : 'none';
+  if (driving || boating) speedo.textContent = `${Math.round(Math.abs((boating || truck).speed) * 2.237)} mph`;
   updateHouse(house, player.group.position, dt);
   updateIguanas(iguanas, player.group.position, dt);
   updateStore(store, player.group.position, dt);
   updateGasStation(gasStation, player.group.position, dt);
   const byTruck = !driving && Math.hypot(player.group.position.x - truck.group.position.x, player.group.position.z - truck.group.position.z) < 3.4;
-  const byFridge = !driving && nearFridge(house, player.group.position);
-  usePrompt.textContent = byTruck ? 'Press F to drive the truck' : 'Press E to open or close the fridge';
-  usePrompt.style.display = byTruck || byFridge ? 'block' : 'none';
+  const byFridge = !driving && !boating && nearFridge(house, player.group.position);
+  const byBoat = !driving && !boating && !!boatNear(lake, player.group.position);
+  const canLand = boating && Math.abs(boating.speed) < 2 && !!landingSpot(lake, boating);
+  usePrompt.textContent = canLand ? 'Press F to get out' : byBoat ? 'Press F to take the boat out' : byTruck ? 'Press F to drive the truck' : 'Press E to open or close the fridge';
+  usePrompt.style.display = (byTruck && !boating) || byFridge || byBoat || canLand ? 'block' : 'none';
   updateGun(gun, player, dt);
-  if (driving) gun.mesh.visible = false;
+  if (driving || boating) gun.mesh.visible = false;
   updateNpcs(npcs, player.group.position, dt, onStrike);
   updateCamera();
   updateGrass(grass, player.group.position, time);

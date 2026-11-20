@@ -473,6 +473,38 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   }
 }
 
+// Sitting down (in a boat): thighs forward, shins down, one hand back on the
+// tiller. Call this each frame instead of updatePlayer while he is seated.
+export function sitPlayer(player, dt) {
+  if (!player.mixer) return;
+  const b = player.bones;
+  for (const { bone, rotation } of player.cleanPose) bone.quaternion.copy(rotation);
+  b.hips.position.copy(player.cleanHips);
+  player.actions.Idle.setEffectiveWeight(1);
+  player.actions.Walk.setEffectiveWeight(0);
+  player.actions.Run.setEffectiveWeight(0);
+  player.motion = 0;
+  player.mixer.update(dt);
+  for (const entry of player.cleanPose) entry.rotation.copy(entry.bone.quaternion);
+  player.cleanHips.copy(b.hips.position);
+
+  sideways.set(1, 0, 0).applyQuaternion(player.group.quaternion);
+  forwards.set(0, 0, 1).applyQuaternion(player.group.quaternion);
+  for (const [thigh, shin] of [[b.thighL, b.shinL], [b.thighR, b.shinR]]) {
+    turnBone(thigh, sideways, -1.42);
+    turnBone(shin, sideways, 1.5);
+  }
+  turnBone(b.thighL, forwards, -0.12);  // knees a little apart
+  turnBone(b.thighR, forwards, 0.12);
+  turnBone(b.spine, sideways, 0.12);    // leaning forward slightly
+  turnBone(b.armL, sideways, -0.55);    // left hand resting on his knee
+  turnBone(b.armR, sideways, 0.75);     // right hand back on the tiller
+  turnBone(b.armR, forwards, 0.25);
+  b.hips.position.y -= SIT_DROP;
+}
+export const SIT_DROP = 0.44;          // how far his hips come down when he sits
+export const HIP_HEIGHT = 0.94;        // how high his hips are when standing
+
 const KNOCK = { fall: 0.35, lie: 1.1, rise: 1.7 }; // seconds
 
 // Knock the player flat. He falls away from `fromPosition` (whoever hit him).

@@ -22,6 +22,27 @@ export function pushOut(position, radius) {
     else if (nearest === back) position.z = o.minZ - radius;
     else position.z = o.maxZ + radius;
   }
+
+  // Nobody walks or drives into the lake (boats don't use this check): anything
+  // that strays past the bank is put back on it. The jetty is the exception.
+  if (water.active) {
+    const dx = position.x - water.x, dz = position.z - water.z, dist = Math.hypot(dx, dz) || 1;
+    if (dist < water.radius * 1.35) {
+      const bank = shoreRadius(Math.atan2(dz, dx)) + radius * 0.5;
+      const onJetty = water.docks.some((d) => position.x > d.minX && position.x < d.maxX && position.z > d.minZ && position.z < d.maxZ);
+      if (dist < bank && !onJetty) {
+        position.x = water.x + dx / dist * bank;
+        position.z = water.z + dz / dist * bank;
+      }
+    }
+  }
+}
+
+// The lake, if there is one: its centre, rough radius, and the jetties you may walk out on.
+export const water = { active: false, x: 0, z: 0, radius: 0, docks: [] };
+// How far the bank is from the lake's centre in a given direction (the outline is a wobbly circle).
+export function shoreRadius(angle) {
+  return water.radius * (1 + 0.18 * Math.sin(3 * angle + 1) + 0.1 * Math.sin(5 * angle));
 }
 
 // How far a bullet travelling from `origin` along `direction` gets before it
