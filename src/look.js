@@ -14,8 +14,15 @@ export const PALETTE = {
   sunLight: 0xffdfae,    // golden sunlight
   shade: 0xb9cfe0,       // cool light from the sky
   bounce: 0x8c7a4e,      // warm light bounced off the ground
-  grass: '#768c47',      // sun-dried olive
-  grassBlades: ['#62793a', '#8a9c52', '#9aa85c', '#6c8340', '#b0ac64'],
+  grass: '#8b9a50',      // sun-dried olive (the ground under the blades)
+  grassRoot: 0x5d7236,   // shaded base of each blade
+  dirtDark: 0x5a4630,    // damp soil
+  dirtLight: 0x92784f,   // dry, sun-baked dirt
+  pebble: 0xb0a690,      // small pale stones
+  grassLush: 0x6f8c3c,   // healthy green body of a blade
+  grassTip: 0xa8b85e,    // sunlit blade tips
+  grassDry: 0xc9b76a,    // straw-coloured dry blades
+  grassBlades: ['#7a8c45', '#96a558', '#a3ae60', '#80934a', '#b5b068'],
   jacket: 0xc4573a,      // terracotta
   jeans: 0x4f7482,       // faded teal denim
   shoes: 0xefe6d0,       // cream

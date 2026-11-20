@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { createPlayer, updatePlayer, crouchDrop } from './player.js';
 import { PALETTE, createSky, createComposer } from './look.js';
+import { createGrass, updateGrass } from './grass.js';
+import { addDirt } from './terrain.js';
 
 const MAP_SIZE = 600;     // playable area, metres along each side
 const GROUND_SIZE = 2400; // the grass carries on past the edge so the horizon looks endless
@@ -71,11 +73,14 @@ function makeGrassTexture() {
 
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
-  new THREE.MeshStandardMaterial({ map: makeGrassTexture(), roughness: 1 })
+  addDirt(new THREE.MeshStandardMaterial({ map: makeGrassTexture(), roughness: 1 }))
 );
 ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
 scene.add(ground);
+
+const grass = createGrass(SUN_OFFSET, scene.fog);
+scene.add(grass);
 
 // --- Player -----------------------------------------------------------------
 const player = createPlayer();
@@ -157,6 +162,7 @@ renderer.setAnimationLoop(() => {
   };
   updatePlayer(player, input, cam.yaw, dt, MAP_SIZE / 2);
   updateCamera();
+  updateGrass(grass, player.group.position, time);
 
   sun.target.position.copy(player.group.position);
   sun.position.copy(player.group.position).add(SUN_OFFSET);
