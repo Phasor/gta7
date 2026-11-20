@@ -4,6 +4,7 @@ import { PALETTE, createSky, createComposer } from './look.js';
 import { createGrass, updateGrass } from './grass.js';
 import { addDirt } from './terrain.js';
 import { createHouse, updateHouse, toggleFridge, nearFridge } from './house.js';
+import { createIguanas, updateIguanas } from './iguana.js';
 import { rayToObstacle, ceilingAt, roomLimit } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun } from './gun.js';
 import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, debug as npcDebug } from './npc.js';
@@ -89,6 +90,17 @@ scene.add(grass);
 // The player's house, just ahead of where the game starts.
 const house = createHouse(scene, 3, -24);
 const usePrompt = document.getElementById('prompt');
+
+// Iguanas sunning themselves around the house: [x, z, facing, colour, size].
+// Most are green; big males turn orange. (?calm stops them running off, for checking how they look.)
+const iguanas = createIguanas(scene, [
+  [2, -6, Math.PI / 2, 0x7fb246, 1.0],
+  [-4.5, -12.5, 2.4, 0xe0863a, 1.0],
+  [10.2, -13.2, -0.8, 0x8fbf4e, 0.8],
+  [6, -31, 0.5, 0x94a15c, 0.9],
+  [-9, -5, 3.6, 0x74ad48, 0.7],
+  [14, -22, 1.2, 0xd9954a, 0.95],
+], new URLSearchParams(location.search).has('calm'));
 if (new URLSearchParams(location.search).has('fridge')) house.userData.fridgeOpen = true; // ?fridge starts with it open
 
 // --- Player -----------------------------------------------------------------
@@ -125,6 +137,7 @@ if (testView.has('at')) { // ?at=x,z starts the player somewhere else
   player.group.position.set(x, 0, z);
 }
 if (testView.has('yaw')) cam.yaw = Number(testView.get('yaw')); // ?yaw=1.5 turns the camera
+if (testView.has('dist')) Object.assign(cam, { distance: Number(testView.get('dist')), pitch: 0.3, height: 0.9 }); // ?dist=2 moves it in close and low
 if (testView.has('front')) {
   player.group.rotation.y = 0;
   Object.assign(cam, { distance: Number(testView.get('front')) || 3, height: 1.2, shoulder: 0, pitch: 0.15 });
@@ -293,6 +306,7 @@ function step(dt) {
 
   updatePlayer(player, input, cam.yaw, dt, MAP_SIZE / 2);
   updateHouse(house, player.group.position, dt);
+  updateIguanas(iguanas, player.group.position, dt);
   usePrompt.style.display = nearFridge(house, player.group.position) ? 'block' : 'none';
   updateGun(gun, player, dt);
   updateNpcs(npcs, player.group.position, dt, onStrike);
