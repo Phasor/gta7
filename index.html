@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>City Sandbox</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #9fd3ff; }
+      canvas { display: block; }
+      #hint {
+        position: fixed; left: 12px; bottom: 12px;
+        font: 13px system-ui, sans-serif; color: #fff;
+        background: rgba(0, 0, 0, 0.45); padding: 6px 10px; border-radius: 6px;
+        user-select: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hint">Click the game, then: WASD to walk · Mouse to look · Shift to run · Space to jump · Hold C to crouch · Esc to free the mouse</div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
