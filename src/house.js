@@ -16,7 +16,7 @@ const SLAB = 0.15; // the concrete base the house sits on
 
 // --- Materials ---------------------------------------------------------------
 
-function canvasTexture(size, paint, repeatX, repeatY) {
+export function canvasTexture(size, paint, repeatX, repeatY) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   paint(canvas.getContext('2d'), size);
@@ -28,7 +28,7 @@ function canvasTexture(size, paint, repeatX, repeatY) {
 }
 
 // Speckle a canvas so a flat colour looks like a rough surface.
-function speckle(ctx, size, count, alpha) {
+export function speckle(ctx, size, count, alpha) {
   for (let i = 0; i < count; i++) {
     ctx.fillStyle = Math.random() < 0.5 ? `rgba(0,0,0,${alpha})` : `rgba(255,255,255,${alpha})`;
     ctx.fillRect(Math.random() * size, Math.random() * size, 2, 2);
@@ -336,7 +336,7 @@ function frondGeometry(length, start, bend, width) {
 // --- Building blocks ---------------------------------------------------------
 
 // A box, given its size and the position of its centre.
-function block(parent, material, w, h, d, x, y, z) {
+export function block(parent, material, w, h, d, x, y, z) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
   mesh.position.set(x, y, z);
   mesh.castShadow = true;
@@ -475,9 +475,14 @@ export function createHouse(scene, x, z) {
   block(house, m.paint, 5.75, WALL_HEIGHT, 0.04, 4.925, mid, 4.28);
   block(house, m.paint, 1.1, overDoor, 0.04, 1.5, top - overDoor / 2, 4.28);
   block(house, m.floor, 11.8, 0.02, 8.6, 1.9, SLAB + 0.01, 0);  block(house, m.concrete, 6.3, SLAB, 9.8, -7, SLAB / 2, 1.25);
-  block(house, m.stucco, 6, WALL_HEIGHT, 9.5, -7, SLAB + WALL_HEIGHT / 2, 1.25);
-  block(house, m.trim, 6.05, 0.2, 9.55, -7, SLAB + 0.1, 1.25);
-
+  // The garage is hollow too, with a wide opening at the front for its door.
+  const overGarageDoor = WALL_HEIGHT - 2.3;
+  block(house, m.stucco, 0.2, WALL_HEIGHT, 9.5, -9.9, mid, 1.25);     // left
+  block(house, m.stucco, 5.6, WALL_HEIGHT, 0.2, -7, mid, -3.4);       // back
+  block(house, m.stucco, 0.2, WALL_HEIGHT, 10.5, -4.1, mid, 0.75);    // right (shared with the house)
+  block(house, m.stucco, 0.5, WALL_HEIGHT, 0.2, -9.55, mid, 5.9);     // front, either side of the door
+  block(house, m.stucco, 0.5, WALL_HEIGHT, 0.2, -4.45, mid, 5.9);
+  block(house, m.stucco, 4.6, overGarageDoor, 0.2, -7, top - overGarageDoor / 2, 5.9);
   // Roofs, each with a white board round the edge.
   const mainRoof = hipRoof(m.roof, 13.4, 10.4, 1.7);
   mainRoof.position.set(2, top, 0);
@@ -489,8 +494,13 @@ export function createHouse(scene, x, z) {
   block(house, m.trim, 7.4, 0.16, 10.9, -7, top - 0.08, 1.25);
 
   // Garage door, with a light above it.
-  block(house, m.trim, 5.1, 2.4, 0.08, -7, SLAB + 1.2, 6.0);
-  block(house, m.garageDoor, 4.8, 2.25, 0.1, -7, SLAB + 1.125, 6.02);
+  block(house, m.trim, 0.1, 2.3, 0.26, -9.3, SLAB + 1.15, 5.9);      // door frame
+  block(house, m.trim, 0.1, 2.3, 0.26, -4.7, SLAB + 1.15, 5.9);
+  block(house, m.trim, 4.7, 0.1, 0.26, -7, SLAB + 2.35, 5.9);
+  const garageDoor = new THREE.Group(); // hinged along its top edge: it swings up and in under the ceiling
+  garageDoor.position.set(-7, SLAB + 2.3, 5.9);
+  block(garageDoor, m.garageDoor, 4.5, 2.3, 0.08, 0, -1.15, 0);
+  house.add(garageDoor);
   block(house, m.brass, 0.18, 0.26, 0.14, -7, SLAB + 2.58, 6.05);
 
   // Front door: teal, with a frame, a handle, a step and a small porch on two posts.
@@ -874,9 +884,29 @@ export function createHouse(scene, x, z) {
   house.userData = {
     door, fan, doorSpot: new THREE.Vector3(x + 1.5, 0, z + 4.4), open: 0,
     fridgeDoor, fridgeLight, fridgeSpot: new THREE.Vector3(x - 3.4, 0, z - 2.9), fridgeOpen: false, fridgeAmount: 0,
+    garageDoor, garageSpot: new THREE.Vector3(x - 7, 0, z + 5.9), garageOpen: 0, garageHeight: top + 1,
   };
-  solid(-7, 1.25, 6, 9.5, top + 1);
-  solid(-0.05, 6.35, 0.2, 0.2, top);
+  solid(-9.9, 1.25, 0.2, 9.5, top + 1);   // garage walls
+  solid(-7, -3.4, 6, 0.2, top + 1);
+  solid(-4.1, 0.75, 0.2, 10.5, top + 1);
+  solid(-9.6, 5.9, 0.6, 0.2, top + 1);
+  solid(-4.4, 5.9, 0.6, 0.2, top + 1);
+  house.userData.garageBlock = addObstacle(x - 9.3, x - 4.7, z + 5.8, z + 6.0, top + 1); // the garage door, while it is shut
+  addFloor(x - 10, x - 4, z - 3.5, z + 6, SLAB);
+  addInterior(x - 9.8, x - 4.2, z - 3.3, z + 5.8, top - 0.16);
+
+  // In the garage: a workbench with a toolbox, shelves of boxes, and a light.
+  piece(m.wood, 2.2, 0.06, 0.6, -8.5, -2.95, 0.84);
+  piece(m.darkWood, 2.1, 0.84, 0.5, -8.5, -2.95, 0, false);
+  piece(m.dark, 0.5, 0.24, 0.26, -8.9, -2.95, 0.9, false);
+  piece(m.metal, 0.3, 0.03, 0.05, -8.1, -2.9, 0.9, false);
+  piece(m.cabinet, 0.4, 1.9, 1.8, -9.58, 0.4);
+  for (let level = 0; level < 3; level++) for (let i = 0; i < 3; i++) {
+    piece(m.cushion, 0.34, 0.3, 0.44, -9.55, -0.15 + i * 0.56, 0.25 + level * 0.62, false);
+  }
+  const garageLight = new THREE.PointLight(0xfff0dc, 10, 10, 1.6);
+  garageLight.position.set(-7, top - 0.5, 1.2);
+  house.add(garageLight);  solid(-0.05, 6.35, 0.2, 0.2, top);
   solid(3.05, 6.35, 0.2, 0.2, top);
   solid(5.4, 5.25, 3.4, 0.9, 0.8);
   solid(-2.0, 5.25, 2.6, 0.9, 0.8);
@@ -904,6 +934,12 @@ export function updateHouse(house, playerPosition, dt) {
   state.fridgeAmount += ((state.fridgeOpen ? 1 : 0) - state.fridgeAmount) * Math.min(1, 6 * dt);
   state.fridgeDoor.rotation.y = -1.5 * state.fridgeAmount; // swings out into the kitchen
   state.fridgeLight.intensity = 2.5 * state.fridgeAmount;
+
+  // The garage door lifts when the player (on foot or in the truck) comes near it.
+  const atGarage = Math.hypot(playerPosition.x - state.garageSpot.x, playerPosition.z - state.garageSpot.z) < 6.5;
+  state.garageOpen += ((atGarage ? 1 : 0) - state.garageOpen) * Math.min(1, 3 * dt);
+  state.garageDoor.rotation.x = 1.52 * state.garageOpen;
+  state.garageBlock.height = state.garageOpen > 0.7 ? 0 : state.garageHeight; // passable once it is up
 }
 
 // Is the player close enough to the fridge to use it?

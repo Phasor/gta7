@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { turnBoneBy } from './player.js';
-import { pushOut, floorAt } from './world.js';
+import { pushOut, floorAt, addObstacle } from './world.js';
 
 const FOLDER = `${import.meta.env.BASE_URL}models/people/`;
 
@@ -136,11 +136,29 @@ function wander(npc, near, far) {
 
 // testSpot: if given, the first NPC stands still there (used for checking things work).
 // testKind: 'man' or 'woman', which of them that first NPC should be.
-export function createNpcs(scene, halfMap, testSpot, testKind) {
+// cashierSpot: { x, z, facing } puts a shopkeeper there. He never leaves his spot;
+// he just stands at the till and turns his head to watch the player.
+export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpot) {
   const npcs = [];
   const loader = new GLTFLoader();
   Promise.all([loadKind(loader, 'woman'), loadKind(loader, 'man')]).then(([woman, man]) => {
     const kinds = { woman, man };
+
+    if (cashierSpot) {
+      const model = cloneSkinned(man.scene);
+      model.traverse((part) => { if (part.isMesh) part.material = recolour(part.material, 330); });
+      const group = new THREE.Group();
+      group.position.set(cashierSpot.x, 0, cashierSpot.z);
+      group.position.y = floorAt(group.position);
+      group.rotation.y = cashierSpot.facing;
+      group.add(model);
+      scene.add(group);
+      const mixer = new THREE.AnimationMixer(model);
+      mixer.clipAction(man.clips[0]).play(); // standing idle
+      const bones = [model.getObjectByName('Neck'), model.getObjectByName('Head')];
+      npcs.cashier = { group, mixer, bones, clean: bones.map((bone) => bone.quaternion.clone()), look: 0 };
+      addObstacle(cashierSpot.x - 0.3, cashierSpot.x + 0.3, cashierSpot.z - 0.3, cashierSpot.z + 0.3, 2.1);
+    }
     const people = testKind === 'man' ? [PEOPLE[1], PEOPLE[0], ...PEOPLE.slice(2)] : PEOPLE;
 
     people.forEach((person, i) => {
@@ -248,6 +266,22 @@ function poseStrike(npc, playerPosition, t) {
 
 // onStrike(kind, npc) is called at the moment a slap or punch lands on the player.
 export function updateNpcs(npcs, playerPosition, dt, onStrike) {
+  // The cashier: stands still, and his head follows the player round the shop.
+  const cashier = npcs.cashier;
+  if (cashier) {
+    cashier.bones.forEach((bone, i) => bone.quaternion.copy(cashier.clean[i])); // undo last frame's head turn
+    cashier.mixer.update(dt);
+    cashier.bones.forEach((bone, i) => cashier.clean[i].copy(bone.quaternion));
+    const dx = playerPosition.x - cashier.group.position.x, dz = playerPosition.z - cashier.group.position.z;
+    let want = Math.atan2(dx, dz) - cashier.group.rotation.y;
+    want = Math.atan2(Math.sin(want), Math.cos(want));
+    if (Math.hypot(dx, dz) > 9) want = 0;                 // nobody about: looks straight ahead
+    want = THREE.MathUtils.clamp(want, -1.3, 1.3);        // a neck only turns so far
+    cashier.look += (want - cashier.look) * Math.min(1, 4 * dt);
+    turnBoneBy(cashier.bones[0], swing.setFromAxisAngle(UP, cashier.look * 0.35));
+    turnBoneBy(cashier.bones[1], swing.setFromAxisAngle(UP, cashier.look * 0.65));
+  }
+
   for (const npc of npcs) {
     const position = npc.group.position;
     npc.timer -= dt;

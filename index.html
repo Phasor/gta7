@@ -21,6 +21,11 @@
         font: 15px system-ui, sans-serif; color: #f3e9d2; background: rgba(40, 30, 20, 0.7);
         padding: 8px 14px; border-radius: 6px; pointer-events: none;
       }
+      #speed {
+        display: none; position: fixed; right: 18px; bottom: 60px;
+        font: bold 26px system-ui, sans-serif; color: #f3e9d2; background: rgba(40, 30, 20, 0.6);
+        padding: 6px 14px; border-radius: 8px; pointer-events: none;
+      }
       #hint {
         position: fixed; left: 12px; bottom: 12px;
         font: 13px system-ui, sans-serif; color: #f3e9d2;
@@ -32,8 +37,9 @@
   <body>
     <div id="hurt"></div>
     <div id="crosshair"></div>
+    <div id="speed"></div>
     <div id="prompt">Press E to open or close the fridge</div>
-    <div id="hint">Click the game, then: WASD to walk · Mouse to look · Shift to run · Space to jump · Hold C to crouch · Q: gun · Right mouse: aim · Left mouse: shoot · Esc to free the mouse</div>
+    <div id="hint">Click the game, then: WASD to walk · Mouse to look · Shift to run · Space to jump · Hold C to crouch · Q: gun · Right mouse: aim · Left mouse: shoot · F: get in/out of the truck (WASD drive, Space brake) · Esc to free the mouse</div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

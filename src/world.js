@@ -3,7 +3,9 @@
 export const obstacles = []; // { minX, maxX, minZ, maxZ, height }
 
 export function addObstacle(minX, maxX, minZ, maxZ, height) {
-  obstacles.push({ minX, maxX, minZ, maxZ, height });
+  const obstacle = { minX, maxX, minZ, maxZ, height };
+  obstacles.push(obstacle);
+  return obstacle; // so a door can make itself passable later by setting its height to 0
 }
 
 // If a person of the given radius standing at `position` overlaps anything
