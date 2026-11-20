@@ -7,6 +7,7 @@ const CROUCH_SPEED = 1.3;
 const JUMP_SPEED = 6.5;
 const GRAVITY = 20;
 const TURN_RATE = 12;
+const JUMP_WINDUP = 0.11; // seconds of knee-dip before leaving the ground
 
 // How fast the model's feet travel in its walk and run animations (metres per
 // second). Playing an animation faster or slower to match the real speed keeps
@@ -24,28 +25,17 @@ const scratch = new THREE.Vector3();
 const MODEL_URL = `${import.meta.env.BASE_URL}models/human.glb`;
 const ANIMATIONS_URL = `${import.meta.env.BASE_URL}models/soldier.glb`;
 
-// The angle every bone sits at in the pose the model's skin was attached in
-// (arms straight out to the sides). Both models were made in this same pose,
-// which makes it the common starting point for copying movement across.
+// The angle every bone is at right now, as seen from outside the model. Taken
+// while a model stands in its resting pose (arms out to the sides), this is the
+// common starting point for copying movement from one skeleton to another.
 function restingRotations(root) {
+  root.updateWorldMatrix(true, true);
   const rest = new Map();
-  const matrix = new THREE.Matrix4(), position = new THREE.Vector3(), scale = new THREE.Vector3();
-  root.traverse((mesh) => {
-    if (!mesh.isSkinnedMesh) return;
-    mesh.skeleton.bones.forEach((bone, i) => {
-      if (rest.has(bone)) return;
-      const rotation = new THREE.Quaternion();
-      matrix.copy(mesh.skeleton.boneInverses[i]).invert().decompose(position, rotation, scale);
-      // That angle is measured inside the skeleton's container, which may itself
-      // be turned (this is how a model made "Z-up" is stood upright).
-      let container = bone;
-      while (container.parent && container.parent.isBone) container = container.parent;
-      rest.set(bone, container.parent.getWorldQuaternion(new THREE.Quaternion()).multiply(rotation));
-    });
+  root.traverse((bone) => {
+    if (bone.isBone) rest.set(bone, bone.getWorldQuaternion(new THREE.Quaternion()));
   });
   return rest;
 }
-
 // Convert the soldier's animations so they drive the human's skeleton.
 //
 // The two skeletons have the same bones (the soldier's are prefixed "mixamorig")
@@ -53,7 +43,8 @@ function restingRotations(root) {
 // across. Instead we pose the soldier at each moment of an animation, work out
 // how far every bone has turned from its resting position, and turn the human's
 // matching bone by the same amount.
-function borrowAnimations(soldier, model, names) {
+// prefix: text in front of every bone name in model (some models have one).
+export function borrowAnimations(soldier, model, names, prefix = '') {
   const source = soldier.scene;
   source.rotation.y = Math.PI; // the soldier is built facing backwards; face him the same way as the human
   model.updateWorldMatrix(true, true);
@@ -77,9 +68,9 @@ function borrowAnimations(soldier, model, names) {
   // Without this every arm movement lands about 60 degrees too low.
   const at = (bone) => bone.getWorldPosition(new THREE.Vector3());
   for (const [hand, sign] of [['Left', 1], ['Right', -1]]) {
-    const arm = model.getObjectByName(`${hand}Arm`);
-    const foreArm = model.getObjectByName(`${hand}ForeArm`);
-    const wrist = model.getObjectByName(`${hand}Hand`);
+    const arm = model.getObjectByName(`${prefix}${hand}Arm`);
+    const foreArm = model.getObjectByName(`${prefix}${hand}ForeArm`);
+    const wrist = model.getObjectByName(`${prefix}${hand}Hand`);
     if (!arm || !foreArm || !wrist) continue;
     const level = new THREE.Vector3(sign, 0, 0);
     const raise = new Q().setFromUnitVectors(at(foreArm).sub(at(arm)).normalize(), level);
@@ -90,7 +81,7 @@ function borrowAnimations(soldier, model, names) {
   }
   model.traverse((bone) => { // parents are visited before their children
     if (!bone.isBone) return;
-    const from = source.getObjectByName(`mixamorig${bone.name}`);
+    const from = source.getObjectByName(`mixamorig${bone.name.slice(prefix.length)}`);
     if (!from || !restOfSoldier.has(from) || !restOfHuman.has(bone)) return;
     const pair = {
       to: bone, from,
@@ -102,7 +93,7 @@ function borrowAnimations(soldier, model, names) {
     byBone.set(bone, pair);
   });
 
-  const hips = byBone.get(model.getObjectByName('Hips'));
+  const hips = byBone.get(model.getObjectByName(`${prefix}Hips`));
   const hipsParentRotation = hips.to.parent.getWorldQuaternion(new Q());
   const sizeRatio = hips.to.getWorldPosition(new THREE.Vector3()).y / hips.from.getWorldPosition(new THREE.Vector3()).y;
 
@@ -144,28 +135,33 @@ function borrowAnimations(soldier, model, names) {
     action.stop();
 
     const tracks = pairs.map((pair) => new THREE.QuaternionKeyframeTrack(`${pair.to.name}.quaternion`, times, pair.values));
-    tracks.push(new THREE.VectorKeyframeTrack('Hips.position', times, hipSpots));
+    tracks.push(new THREE.VectorKeyframeTrack(`${prefix}Hips.position`, times, hipSpots));
     return new THREE.AnimationClip(name, clip.duration, tracks);
   });
 }
 // A relaxed standing pose made in code: arms hanging at his sides, hands loose,
 // with slow breathing. (The soldier's own idle is a combat stance with the
 // hands held up for a rifle, which looks wrong on a civilian.)
-function makeIdle(model) {
+export function makeIdle(model, prefix = '') {
   model.updateWorldMatrix(true, true);
   const bones = [];
   model.traverse((part) => { if (part.isBone) bones.push(part); });
   const rest = bones.map((bone) => bone.quaternion.clone());
   const forward = new THREE.Vector3(0, 0, 1), side = new THREE.Vector3(1, 0, 0);
   const turn = (name, axis, angle) => {
-    const bone = model.getObjectByName(name);
+    const bone = model.getObjectByName(prefix + name);
     if (bone) turnBone(bone, axis, angle);
   };
 
-  // The model is built with its arms angled down and away from the body.
-  // Bring them in a little further so they hang naturally at his sides.
+  // Models are built with their arms held out from the body. Swing each arm
+  // down until it hangs naturally at the side.
   for (const [hand, sign] of [['Left', 1], ['Right', -1]]) {
-    turn(`${hand}Arm`, forward, -0.3 * sign);
+    const arm = model.getObjectByName(`${prefix}${hand}Arm`);
+    const foreArm = model.getObjectByName(`${prefix}${hand}ForeArm`);
+    if (!arm || !foreArm) continue;
+    const now = foreArm.getWorldPosition(new THREE.Vector3()).sub(arm.getWorldPosition(new THREE.Vector3())).normalize();
+    const hanging = new THREE.Vector3(sign * 0.25, -0.97, 0).normalize();
+    turnBoneBy(arm, new THREE.Quaternion().setFromUnitVectors(now, hanging));
   }
   const relaxed = bones.map((bone) => bone.quaternion.clone());
 
@@ -181,8 +177,8 @@ function makeIdle(model) {
     `${bone.name}.quaternion`, times,
     [...relaxed[i].toArray(), ...breathIn[i].toArray(), ...relaxed[i].toArray()]
   ));
-  const hips = model.getObjectByName('Hips').position;
-  tracks.push(new THREE.VectorKeyframeTrack('Hips.position', times, [...hips.toArray(), ...hips.toArray(), ...hips.toArray()]));
+  const hips = model.getObjectByName(`${prefix}Hips`).position;
+  tracks.push(new THREE.VectorKeyframeTrack(`${prefix}Hips.position`, times, [...hips.toArray(), ...hips.toArray(), ...hips.toArray()]));
   return new THREE.AnimationClip('Idle', 4, tracks);
 }
 
@@ -190,6 +186,7 @@ function makeIdle(model) {
 // The model loads in the background and appears a moment after the game starts.
 export function createPlayer() {
   const group = new THREE.Group();
+  group.rotation.order = 'YXZ'; // turn to face a direction first, then tip over (for being knocked down)
   group.rotation.y = Math.PI; // start facing away from the camera
 
   const player = {
@@ -198,6 +195,13 @@ export function createPlayer() {
     onGround: true,
     motion: 0,   // 0 = standing, 1 = walking, 2 = running (blended)
     crouch: 0,   // 0 = standing, 1 = fully crouched (blended)
+    aim: 0,      // 0 = arm relaxed, 1 = arm raised and aiming (blended)
+    slap: 0,     // 1 right after being slapped, fading to 0
+    windUp: 0,   // seconds left of the dip before a jump leaves the ground
+    land: 0,     // 1 right after a hard landing, fading to 0 (knees absorb it)
+    air: 0,      // 0 = on the ground, 1 = in the air (blended)
+    downTime: -1, // seconds since being knocked down, or -1 when on his feet
+    down: 0,     // 0 = upright, 1 = flat on his back
     mixer: null, actions: null, bones: null, ankleHeight: 0,
     cleanPose: [], cleanHips: new THREE.Vector3(), // the animated pose before crouch adjustments
   };
@@ -220,6 +224,9 @@ export function createPlayer() {
       thighL: bone('LeftUpLeg'), thighR: bone('RightUpLeg'),
       shinL: bone('LeftLeg'), shinR: bone('RightLeg'),
       footL: bone('LeftFoot'), footR: bone('RightFoot'),
+      armR: bone('RightArm'), foreArmR: bone('RightForeArm'), handR: bone('RightHand'),
+      armL: bone('LeftArm'), spine1: bone('Spine1'), spine2: bone('Spine2'),
+      head: bone('Head'),
     };
 
     player.mixer = new THREE.AnimationMixer(model);
@@ -235,7 +242,7 @@ export function createPlayer() {
     // Measure how high the ankles sit above the ground when standing.
     player.mixer.update(0);
     const b = player.bones;
-    player.cleanPose = [b.spine, b.thighL, b.thighR, b.shinL, b.shinR, b.footL, b.footR]
+    player.cleanPose = [b.spine, b.thighL, b.thighR, b.shinL, b.shinR, b.footL, b.footR, b.armR, b.foreArmR, b.head, b.armL, b.spine1, b.spine2]
       .map((part) => ({ bone: part, rotation: part.quaternion.clone() }));
     player.cleanHips.copy(b.hips.position);
     group.updateWorldMatrix(true, true);
@@ -248,23 +255,53 @@ export function createPlayer() {
   return player;
 }
 
-const sideways = new THREE.Vector3();
+const sideways = new THREE.Vector3(), forwards = new THREE.Vector3();
 const parentTurn = new THREE.Quaternion(), worldTurn = new THREE.Quaternion();
 
 // Turn a bone by `angle` around an axis given in world space.
 function turnBone(bone, axis, angle) {
-  bone.parent.getWorldQuaternion(parentTurn);
-  worldTurn.setFromAxisAngle(axis, angle);
-  // Convert the world-space turn into the bone's parent's space, then apply it.
-  worldTurn.premultiply(parentTurn.clone().invert()).multiply(parentTurn);
-  bone.quaternion.premultiply(worldTurn);
+  turnBoneBy(bone, worldTurn.setFromAxisAngle(axis, angle));
 }
 
-// input: { x, z, sprint, jump, crouch } where x/z are -1..1 relative to the camera.
+// Turn a bone by a rotation given in world space. (Changes `turn`.)
+export function turnBoneBy(bone, turn) {
+  bone.parent.getWorldQuaternion(parentTurn);
+  // Convert the world-space turn into the bone's parent's space, then apply it.
+  turn.premultiply(parentTurn.clone().invert()).multiply(parentTurn);
+  bone.quaternion.premultiply(turn);
+}
+
+const NO_TURN = new THREE.Quaternion();
+const aimTurn = new THREE.Quaternion();
+const shoulderSpot = new THREE.Vector3(), jointSpot = new THREE.Vector3();
+const limbDirection = new THREE.Vector3(), aimDirection = new THREE.Vector3();
+
+// input: { x, z, sprint, jump, crouch, aim, aimPoint, kick } where x/z are -1..1 relative to the camera.
 // cameraYaw: the direction the camera faces, so "forward" means away from it.
 export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   const { group } = player;
 
+  // Knocked down: he falls flat on his back and lies sprawled, then sits up,
+  // pushes off his hands, rolls forward into a squat and stands. No control meanwhile.
+  let sprawl = 0, sit = 0, armsBack = 0, squat = 0, dip = 0;
+  if (player.downTime >= 0) {
+    player.downTime += dt;
+    if (player.freezeDown !== undefined) player.downTime = Math.min(player.downTime, player.freezeDown); // test switch
+    const step = THREE.MathUtils.smoothstep;
+    const falling = Math.min(1, player.downTime / KNOCK.fall) ** 2;
+    const up = player.downTime - KNOCK.fall - KNOCK.lie; // seconds into getting up
+    player.down = up < 0 ? falling : 1 - step(up, 0.45, 0.95);
+    sprawl = up < 0 ? falling : 1 - step(up, 0, 0.3);
+    sit = step(up, 0, 0.5) * (1 - step(up, 0.5, 0.95));
+    armsBack = step(up, 0.05, 0.4) * (1 - step(up, 0.55, 0.9));
+    squat = step(up, 0.25, 0.9) * (1 - step(up, 1.0, KNOCK.rise));
+    if (up >= KNOCK.rise) player.downTime = -1;
+    input = { ...input, x: 0, z: 0, sprint: false, jump: false, crouch: false, aim: false };
+  } else {
+    player.down = 0;
+  }
+  group.rotation.x = -Math.PI / 2 * player.down;
+  if (group.children[0]) group.children[0].position.z = 0.12 * player.down; // rest on the ground, not in it
   const crouching = input.crouch && player.onGround;
   const sprinting = input.sprint && !crouching;
   const speed = crouching ? CROUCH_SPEED : sprinting ? SPRINT_SPEED : WALK_SPEED;
@@ -281,9 +318,12 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
     dx /= len; dz /= len;
     group.position.x += dx * speed * dt;
     group.position.z += dz * speed * dt;
+  }
 
-    // Turn to face the way we're walking, taking the short way round.
-    const target = Math.atan2(dx, dz);
+  // Turn to face the way we're walking (or, when aiming, the way the camera
+  // looks), taking the short way round.
+  if (moving || input.aim) {
+    const target = input.aim ? Math.atan2(fx, fz) : Math.atan2(dx, dz);
     let diff = target - group.rotation.y;
     diff = Math.atan2(Math.sin(diff), Math.cos(diff));
     group.rotation.y += diff * Math.min(1, TURN_RATE * dt);
@@ -294,20 +334,29 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   group.position.x = THREE.MathUtils.clamp(group.position.x, -limit, limit);
   group.position.z = THREE.MathUtils.clamp(group.position.z, -limit, limit);
 
-  // Jump + gravity. Jumping from a crouch stands the character up.
-  if (input.jump && player.onGround) {
-    player.velocityY = JUMP_SPEED;
-    player.onGround = false;
+  // Jump: a quick dip of the knees to push off, then up. On the way down the
+  // knees bend again to absorb the landing.
+  if (input.jump && player.onGround && player.windUp <= 0) player.windUp = JUMP_WINDUP;
+  if (player.windUp > 0) {
+    player.windUp -= dt;
+    dip = 0.55 * Math.sin(Math.PI * Math.min(1, 1 - player.windUp / JUMP_WINDUP) * 0.6);
+    if (player.windUp <= 0) {
+      player.velocityY = JUMP_SPEED;
+      player.onGround = false;
+    }
   }
   if (!player.onGround) {
     player.velocityY -= GRAVITY * dt;
     group.position.y += player.velocityY * dt;
     if (group.position.y <= 0) {
+      player.land = Math.min(1, -player.velocityY / JUMP_SPEED);
       group.position.y = 0;
       player.velocityY = 0;
       player.onGround = true;
     }
   }
+  player.land = Math.max(0, player.land - dt * 3);
+  player.air += ((player.onGround ? 0 : 1) - player.air) * Math.min(1, 14 * dt);
 
   // Blend smoothly between standing, walking, running and crouching.
   const targetMotion = !moving ? 0 : sprinting ? 2 : 1;
@@ -335,8 +384,10 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   for (const entry of player.cleanPose) entry.rotation.copy(entry.bone.quaternion);
   player.cleanHips.copy(b.hips.position);
 
-  // Crouch: bend the legs and lean forward on top of the animation.
-  const c = player.crouch;
+  // Crouch: bend the legs and lean forward on top of the animation. The same
+  // pose is used for the dip before a jump, absorbing a landing, and the squat
+  // he passes through when getting up off the floor.
+  const c = Math.max(player.crouch, squat, dip, 0.6 * player.land * player.land);
   if (c > 0.001) {
     // Bones in this model each point their own way, so turn them about the
     // character's sideways axis as seen from outside, not about their own axes.
@@ -351,15 +402,83 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
     // exactly as much as it takes to put the lowest foot back down.
     b.hips.updateWorldMatrix(true, true);
     const lowestFoot = Math.min(b.footL.getWorldPosition(scratch).y, b.footR.getWorldPosition(scratch).y);
-    const lift = lowestFoot - group.position.y - player.ankleHeight;
+    const lift = (lowestFoot - group.position.y - player.ankleHeight) * (1 - player.down) ** 2; // not while lying down
     const parent = b.hips.parent;
     const from = parent.worldToLocal(b.hips.getWorldPosition(scratch).clone());
     const to = parent.worldToLocal(b.hips.getWorldPosition(scratch).clone().setY(scratch.y - lift));
     b.hips.position.add(to.sub(from));
   }
+
+  // In the air: his arms swing up for lift as he leaves the ground, his knees
+  // tuck up at the top of the jump, then his legs reach down and his arms spread
+  // for balance as he comes in to land.
+  if (player.air > 0.01) {
+    const phase = THREE.MathUtils.clamp((1 - player.velocityY / JUMP_SPEED) / 2, 0, 1); // 0 taking off, 1 landing
+    const tuck = player.air * Math.sin(Math.PI * phase);
+    const lift = player.air * (1 - phase), spread = player.air * phase;
+    sideways.set(1, 0, 0).applyQuaternion(group.quaternion);
+    forwards.set(0, 0, 1).applyQuaternion(group.quaternion);
+    turnBone(b.spine, sideways, 0.15 * tuck);
+    turnBone(b.thighL, sideways, -0.95 * tuck);
+    turnBone(b.shinL, sideways, 1.35 * tuck);
+    turnBone(b.thighR, sideways, -0.45 * tuck);
+    turnBone(b.shinR, sideways, 0.9 * tuck);
+    turnBone(b.armL, sideways, -1.1 * lift);
+    turnBone(b.armR, sideways, -1.1 * lift);
+    turnBone(b.armL, forwards, 0.55 * spread);
+    turnBone(b.armR, forwards, -0.55 * spread);
+  }
+
+  // On the floor and getting up.
+  if (sprawl > 0.001 || sit > 0.001 || armsBack > 0.001) {
+    sideways.set(1, 0, 0).applyQuaternion(group.quaternion);
+    forwards.set(0, 0, 1).applyQuaternion(group.quaternion);
+    // Sprawled on his back: arms flung out, one knee up.
+    turnBone(b.armL, forwards, 0.9 * sprawl);
+    turnBone(b.armR, forwards, -0.65 * sprawl);
+    turnBone(b.thighR, sideways, -0.5 * sprawl);
+    turnBone(b.shinR, sideways, 0.9 * sprawl);
+    // Sitting up: his back curls forward, a little at each joint of the spine...
+    for (const part of [b.spine, b.spine1, b.spine2]) turnBone(part, sideways, 0.42 * sit);
+    // ...while his arms reach back to push off the ground.
+    turnBone(b.armL, sideways, 0.9 * armsBack);
+    turnBone(b.armR, sideways, 0.9 * armsBack);
+  }
+
+  // Aim: straighten the right arm and point it at what the camera is looking at.
+  player.aim += ((input.aim ? 1 : 0) - player.aim) * Math.min(1, 14 * dt);
+  if (player.aim > 0.001 && input.aimPoint) {
+    b.armR.getWorldPosition(shoulderSpot);
+    aimDirection.copy(input.aimPoint).sub(shoulderSpot).normalize();
+    aimDirection.y += (input.kick || 0) * 0.16; // recoil kicks the arm up
+    aimDirection.normalize();
+    for (const [upper, lower] of [[b.armR, b.foreArmR], [b.foreArmR, b.handR]]) {
+      upper.getWorldPosition(shoulderSpot);
+      lower.getWorldPosition(jointSpot);
+      limbDirection.copy(jointSpot).sub(shoulderSpot).normalize();
+      aimTurn.setFromUnitVectors(limbDirection, aimDirection);
+      turnBoneBy(upper, aimTurn.slerpQuaternions(NO_TURN, aimTurn.clone(), player.aim));
+    }
+  }
+
+  // Slapped: his head snaps round to the side, then eases back.
+  if (player.slap > 0) {
+    player.slap = Math.max(0, player.slap - dt * 2.2);
+    turnBone(b.head, sideways.set(0, 1, 0), 0.9 * player.slap * player.slap);
+  }
+}
+
+const KNOCK = { fall: 0.35, lie: 1.1, rise: 1.7 }; // seconds
+
+// Knock the player flat. He falls away from `fromPosition` (whoever hit him).
+export function knockDown(player, fromPosition) {
+  if (player.downTime >= 0) return;
+  const position = player.group.position;
+  player.group.rotation.y = Math.atan2(fromPosition.x - position.x, fromPosition.z - position.z);
+  player.downTime = 0;
 }
 
 // How much lower the character's head is right now (used by the camera).
 export function crouchDrop(player) {
-  return 0.45 * player.crouch;
+  return 0.45 * player.crouch + 0.9 * player.down;
 }

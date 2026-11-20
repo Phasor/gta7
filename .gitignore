@@ -1,2 +1,5 @@
 node_modules/
 dist/
+
+# Ready Player Me bodies and animations: free to use in the game, but their licence forbids sharing the files
+public/models/people/

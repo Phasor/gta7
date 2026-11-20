@@ -1,8 +1,10 @@
 import * as THREE from 'three';
-import { createPlayer, updatePlayer, crouchDrop } from './player.js';
+import { createPlayer, updatePlayer, crouchDrop, knockDown } from './player.js';
 import { PALETTE, createSky, createComposer } from './look.js';
 import { createGrass, updateGrass } from './grass.js';
 import { addDirt } from './terrain.js';
+import { createGun, updateGun, fireGun, createDisplayGun } from './gun.js';
+import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, debug as npcDebug } from './npc.js';
 
 const MAP_SIZE = 600;     // playable area, metres along each side
 const GROUND_SIZE = 2400; // the grass carries on past the edge so the horizon looks endless
@@ -86,11 +88,18 @@ scene.add(grass);
 const player = createPlayer();
 scene.add(player.group);
 
+const gun = createGun(scene, renderer);
+const crosshair = document.getElementById('crosshair');
+let aimHeld = false;   // right mouse button is down
+let aimTimer = 0;      // keeps the arm up for a moment after a shot
+let shotQueued = false;
+
 // --- Input ------------------------------------------------------------------
 const keys = new Set();
 window.addEventListener('keydown', (e) => {
   keys.add(e.code);
   if (e.code === 'Space') e.preventDefault(); // stop the page scrolling
+  if (e.code === 'KeyQ' && !e.repeat) gun.equipped = !gun.equipped; // draw or put away the gun
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
@@ -100,7 +109,8 @@ const cam = { yaw: 0, pitch: 0.18, distance: 3.6, shoulder: 0.55, height: 1.6 };
 const MOUSE_SENSITIVITY = 0.0025;
 
 // Test views: add ?front to the game's address to see the character from the
-// front, ?crouch to hold him in a crouch, and ?walk or ?run to move him sideways.
+// front, ?crouch to hold him in a crouch, ?walk or ?run to move him sideways,
+// and ?gun, ?aim and ?fire to draw, aim and keep firing the gun.
 const testView = new URLSearchParams(location.search);
 if (testView.has('front')) {
   player.group.rotation.y = 0;
@@ -114,8 +124,17 @@ let dragging = false;
 canvas.addEventListener('click', () => {
   if (document.pointerLockElement !== canvas) canvas.requestPointerLock?.();
 });
-canvas.addEventListener('mousedown', () => (dragging = true));
-window.addEventListener('mouseup', () => (dragging = false));
+canvas.addEventListener('mousedown', (e) => {
+  dragging = true;
+  if (e.button === 2) aimHeld = true;
+  // Left click shoots, but only once the mouse is captured (the first click captures it).
+  if (e.button === 0 && gun.equipped && document.pointerLockElement === canvas) shotQueued = true;
+});
+window.addEventListener('mouseup', (e) => {
+  dragging = false;
+  if (e.button === 2) aimHeld = false;
+});
+canvas.addEventListener('contextmenu', (e) => e.preventDefault()); // right click aims; no menu
 window.addEventListener('mousemove', (e) => {
   if (document.pointerLockElement !== canvas && !dragging) return;
   cam.yaw -= e.movementX * MOUSE_SENSITIVITY;
@@ -134,12 +153,15 @@ function updateCamera() {
 
   // Point the camera looks at: the character's upper back, nudged sideways.
   const height = cam.height - crouchDrop(player); // camera dips when crouching
-  lookAt.set(p.x + rx * cam.shoulder, p.y + height, p.z + rz * cam.shoulder);
+  // Aiming pulls the camera in closer and further over the shoulder.
+  const shoulder = cam.shoulder + 0.2 * player.aim;
+  const distance = cam.distance * (1 - 0.4 * player.aim);
+  lookAt.set(p.x + rx * shoulder, p.y + height, p.z + rz * shoulder);
 
-  const flat = Math.cos(cam.pitch) * cam.distance;
+  const flat = Math.cos(cam.pitch) * distance;
   camera.position.set(
     lookAt.x + Math.sin(cam.yaw) * flat,
-    Math.max(0.3, lookAt.y + Math.sin(cam.pitch) * cam.distance), // never below ground
+    Math.max(0.3, lookAt.y + Math.sin(cam.pitch) * distance), // never below ground
     lookAt.z + Math.cos(cam.yaw) * flat
   );
   camera.lookAt(lookAt);
@@ -156,19 +178,96 @@ window.addEventListener('resize', () => {
   composer.setSize(window.innerWidth, window.innerHeight);
 });
 
+const aimDir = new THREE.Vector3(), aimPoint = new THREE.Vector3();
+// ?npc stands one person right in front of the crosshair, for checking shooting works
+// (a woman, or a man with ?npc&man).
+const npcs = createNpcs(scene, MAP_SIZE / 2, testView.has('npc') ? new THREE.Vector3(0.75, 0, -5) : null, testView.has('man') ? 'man' : 'woman');
+if (testView.has('npcpace')) npcDebug.pace = Number(testView.get('npcpace')); // hold NPCs in walk (1) or run (2)
+let hitFlash = 0; // the crosshair turns red for a moment when a shot hits someone
+
+// Being hit: his head snaps round, the view jolts and the screen edges flash red.
+// A punch also knocks him flat on his back.
+if (testView.has('stay')) player.freezeDown = Number(testView.get('stay')) || 1; // ?stay=2 freezes a knock-down 2 seconds in, to check the pose
+let hurt = 0;
+const hurtOverlay = document.getElementById('hurt');
+function onStrike(kind, npc) {
+  player.slap = 1;
+  hurt = 1;
+  cam.yaw += kind === 'punch' ? 0.2 : 0.1;
+  if (kind === 'punch') knockDown(player, npc.group.position);
+  if (testView.has('slap')) console.log(`TEST ${kind} landed`);
+}
+if (testView.has('gun')) gun.equipped = true;
+if (testView.has('gunshow')) { // a big copy of the gun, side-on, for checking the model
+  const display = createDisplayGun(renderer);
+  display.scale.setScalar(5);
+  display.position.set(0.1, 1.15, 1.2);
+  display.rotation.y = Number(testView.get('gunshow')) || Math.PI / 2;
+  scene.add(display);
+}
+
 const clock = new THREE.Clock();
-renderer.setAnimationLoop(() => {
-  const dt = Math.min(clock.getDelta(), 0.05); // cap so a paused tab can't cause a huge jump
-  const time = clock.elapsedTime;
+let gameTime = 0;
+
+// Move the whole game forward by `dt` seconds.
+function step(dt) {
+  gameTime += dt;
+  const time = gameTime;
 
   const input = {
     x: (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0) + (testView.has('walk') || testView.has('run') ? 1 : 0),
     z: (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0),
     sprint: keys.has('ShiftLeft') || keys.has('ShiftRight') || testView.has('run'),
-    jump: keys.has('Space'),
+    jump: keys.has('Space') || testView.has('jump'),
     crouch: keys.has('KeyC') || testView.has('crouch'),
   };
+
+  // Where the crosshair points: the spot the camera is looking at, on the
+  // ground if it's looking down, otherwise far off in the distance.
+  camera.getWorldDirection(aimDir);
+  let reach = 300, hitsGround = false;
+  if (aimDir.y < -0.001 && -camera.position.y / aimDir.y < reach) {
+    reach = -camera.position.y / aimDir.y;
+    hitsGround = true;
+  }
+  const struck = findNpcHit(npcs, camera.position, aimDir, reach);
+  if (struck) {
+    reach = struck.distance;
+    hitsGround = false;
+  }
+  aimPoint.copy(camera.position).addScaledVector(aimDir, Math.max(reach, cam.distance + 2));
+
+  // Shooting raises the arm first, then fires once it is up.
+  aimTimer -= dt;
+  if (shotQueued || testView.has('fire')) aimTimer = 0.9;
+  input.aim = gun.equipped && (aimHeld || aimTimer > 0 || testView.has('aim'));
+  input.aimPoint = aimPoint;
+  input.kick = gun.kick;
+  if ((shotQueued || testView.has('fire')) && player.aim > 0.8 && fireGun(gun, aimPoint, hitsGround)) {
+    shotQueued = false;
+    if (struck) {
+      let killed = hitNpc(struck.npc, player.group.position);
+      // ?npc=kill makes the first hit count twice, to check the fall without waiting for a second shot.
+      if (testView.get('npc') === 'kill') killed = hitNpc(struck.npc, player.group.position) || killed;
+      hitFlash = 0.15;
+      if (testView.has('npc')) console.log(killed ? 'TEST npc killed' : 'TEST npc hit');
+    }
+  }
+  hitFlash -= dt;
+  crosshair.style.background = hitFlash > 0 ? '#e0452f' : '';
+  hurt = Math.max(0, hurt - dt * 1.8);
+  hurtOverlay.style.opacity = hurt * hurt;
+  // ?slap makes the first NPC angry straight away, to check the slap without shooting.
+  if (testView.has('slap') && npcs.length && !npcs[0].provoked) {
+    npcs[0].provoked = true;
+    provokeNpc(npcs[0]);
+  }
+  if (!gun.equipped || player.downTime >= 0) shotQueued = false; // no shooting while knocked down
+  crosshair.style.display = gun.equipped ? 'block' : 'none';
+
   updatePlayer(player, input, cam.yaw, dt, MAP_SIZE / 2);
+  updateGun(gun, player, dt);
+  updateNpcs(npcs, player.group.position, dt, onStrike);
   updateCamera();
   updateGrass(grass, player.group.position, time);
 
@@ -179,5 +278,12 @@ renderer.setAnimationLoop(() => {
   sky.material.uniforms.time.value = time;
   vintage.uniforms.time.value = time;
 
+}
+
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05); // cap so a paused tab can't cause a huge jump
+  // ?ff=20 runs the game 20 times faster, for testing things that take a while.
+  const repeats = Number(testView.get('ff')) || 1;
+  for (let i = 0; i < repeats; i++) step(repeats > 1 ? 0.05 : dt);
   composer.render();
 });
