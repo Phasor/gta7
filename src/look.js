@@ -26,6 +26,9 @@ export const PALETTE = {
   jacket: 0xc4573a,      // terracotta
   jeans: 0x4f7482,       // faded teal denim
   shoes: 0xefe6d0,       // cream
+  tank: 0xe9dfc8,        // off-white vest
+  boots: 0x5b3d26,       // worn brown leather
+  belt: 0x2e2118,
   skin: 0xc98f65,
   hair: 0x2a1b12,
 };

@@ -96,8 +96,16 @@ window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
 
 // Third-person camera: sits behind the character, just over the right shoulder.
-const cam = { yaw: 0, pitch: 0.18, distance: 3.6, shoulder: 0.55, height: 1.55 };
+const cam = { yaw: 0, pitch: 0.18, distance: 3.6, shoulder: 0.55, height: 1.6 };
 const MOUSE_SENSITIVITY = 0.0025;
+
+// Test views: add ?front to the game's address to see the character from the
+// front, ?crouch to hold him in a crouch, and ?walk or ?run to move him sideways.
+const testView = new URLSearchParams(location.search);
+if (testView.has('front')) {
+  player.group.rotation.y = 0;
+  Object.assign(cam, { distance: Number(testView.get('front')) || 3, height: 1.2, shoulder: 0, pitch: 0.15 });
+}
 
 // Click the game to capture the mouse; Esc releases it. Holding a mouse button
 // and dragging also works, for browsers that don't allow mouse capture.
@@ -154,11 +162,11 @@ renderer.setAnimationLoop(() => {
   const time = clock.elapsedTime;
 
   const input = {
-    x: (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0),
+    x: (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0) + (testView.has('walk') || testView.has('run') ? 1 : 0),
     z: (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0),
-    sprint: keys.has('ShiftLeft') || keys.has('ShiftRight'),
+    sprint: keys.has('ShiftLeft') || keys.has('ShiftRight') || testView.has('run'),
     jump: keys.has('Space'),
-    crouch: keys.has('KeyC'),
+    crouch: keys.has('KeyC') || testView.has('crouch'),
   };
   updatePlayer(player, input, cam.yaw, dt, MAP_SIZE / 2);
   updateCamera();
