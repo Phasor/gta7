@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { createPlayer, updatePlayer, crouchDrop } from './player.js';
+import { PALETTE, createSky, createComposer } from './look.js';
 
-const MAP_SIZE = 600; // metres along each side
-const SKY_COLOR = 0x9fd3ff;
+const MAP_SIZE = 600;     // playable area, metres along each side
+const GROUND_SIZE = 2400; // the grass carries on past the edge so the horizon looks endless
 
 // --- Renderer ---------------------------------------------------------------
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: false }); // the composer smooths edges instead
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -14,17 +15,16 @@ document.body.appendChild(renderer.domElement);
 
 // --- Scene ------------------------------------------------------------------
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(SKY_COLOR);
-scene.fog = new THREE.Fog(SKY_COLOR, 250, 700);
+scene.fog = new THREE.Fog(PALETTE.skyHorizon, 120, 700); // distance fades into the horizon haze
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
 
 // --- Light ------------------------------------------------------------------
-scene.add(new THREE.HemisphereLight(0xcfe9ff, 0x4a7a3a, 1.1));
+scene.add(new THREE.HemisphereLight(PALETTE.shade, PALETTE.bounce, 1.7));
 
 // The sun's shadow area is small and follows the player, so shadows stay sharp.
-const SUN_OFFSET = new THREE.Vector3(30, 50, 20);
-const sun = new THREE.DirectionalLight(0xfff2d6, 2.2);
+const SUN_OFFSET = new THREE.Vector3(-26, 38, 30); // afternoon sun behind the starting view, long shadows
+const sun = new THREE.DirectionalLight(PALETTE.sunLight, 3.0);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.left = -30;
@@ -34,6 +34,9 @@ sun.shadow.camera.bottom = -30;
 sun.shadow.camera.far = 150;
 scene.add(sun, sun.target);
 
+const sky = createSky(SUN_OFFSET);
+scene.add(sky);
+
 // --- Grass ground -----------------------------------------------------------
 // The texture is painted in code so the game needs no downloaded assets.
 function makeGrassTexture() {
@@ -42,15 +45,15 @@ function makeGrassTexture() {
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d');
 
-  ctx.fillStyle = '#4f9a3c';
+  ctx.fillStyle = PALETTE.grass;
   ctx.fillRect(0, 0, size, size);
 
   // Thousands of short strokes in mixed greens read as blades of grass.
-  const greens = ['#3f8431', '#5aa845', '#68b850', '#47903a', '#79c25c'];
+  const blades = PALETTE.grassBlades;
   for (let i = 0; i < 6000; i++) {
     const x = Math.random() * size;
     const y = Math.random() * size;
-    ctx.strokeStyle = greens[(Math.random() * greens.length) | 0];
+    ctx.strokeStyle = blades[(Math.random() * blades.length) | 0];
     ctx.globalAlpha = 0.5 + Math.random() * 0.5;
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -60,14 +63,14 @@ function makeGrassTexture() {
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(MAP_SIZE / 6, MAP_SIZE / 6);
+  texture.repeat.set(GROUND_SIZE / 6, GROUND_SIZE / 6);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return texture;
 }
 
 const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE),
+  new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
   new THREE.MeshStandardMaterial({ map: makeGrassTexture(), roughness: 1 })
 );
 ground.rotation.x = -Math.PI / 2;
@@ -129,16 +132,21 @@ function updateCamera() {
   camera.lookAt(lookAt);
 }
 
+// --- Picture: vintage film grade --------------------------------------------
+const { composer, vintage } = createComposer(renderer, scene, camera);
+
 // --- Resize + loop ----------------------------------------------------------
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05); // cap so a paused tab can't cause a huge jump
+  const time = clock.elapsedTime;
 
   const input = {
     x: (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0),
@@ -153,5 +161,9 @@ renderer.setAnimationLoop(() => {
   sun.target.position.copy(player.group.position);
   sun.position.copy(player.group.position).add(SUN_OFFSET);
 
-  renderer.render(scene, camera);
+  sky.position.copy(camera.position); // the sky is always centred on the viewer
+  sky.material.uniforms.time.value = time;
+  vintage.uniforms.time.value = time;
+
+  composer.render();
 });

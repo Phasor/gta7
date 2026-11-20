@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { PALETTE } from './look.js';
 
 const WALK_SPEED = 4;
 const SPRINT_SPEED = 8.5;
@@ -65,7 +66,7 @@ function makeLeg(parent, x, color, shoeColor) {
 
 // Low-poly character built from boxes. Faces +Z. About 1.8 m tall.
 export function createPlayer() {
-  const SKIN = 0xc98f65, JACKET = 0xd9482b, JEANS = 0x2f4a78, SHOES = 0xf2f2f2, HAIR = 0x2a1b12;
+  const { skin: SKIN, jacket: JACKET, jeans: JEANS, shoes: SHOES, hair: HAIR } = PALETTE;
 
   const group = new THREE.Group(); // position on the map (at the feet)
   const body = new THREE.Group();  // sinks when crouching
