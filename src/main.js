@@ -3,6 +3,8 @@ import { createPlayer, updatePlayer, crouchDrop, knockDown } from './player.js';
 import { PALETTE, createSky, createComposer } from './look.js';
 import { createGrass, updateGrass } from './grass.js';
 import { addDirt } from './terrain.js';
+import { createHouse, updateHouse, toggleFridge, nearFridge } from './house.js';
+import { rayToObstacle, ceilingAt, roomLimit } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun } from './gun.js';
 import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, debug as npcDebug } from './npc.js';
 
@@ -84,6 +86,11 @@ scene.add(ground);
 const grass = createGrass(SUN_OFFSET, scene.fog);
 scene.add(grass);
 
+// The player's house, just ahead of where the game starts.
+const house = createHouse(scene, 3, -24);
+const usePrompt = document.getElementById('prompt');
+if (new URLSearchParams(location.search).has('fridge')) house.userData.fridgeOpen = true; // ?fridge starts with it open
+
 // --- Player -----------------------------------------------------------------
 const player = createPlayer();
 scene.add(player.group);
@@ -100,6 +107,7 @@ window.addEventListener('keydown', (e) => {
   keys.add(e.code);
   if (e.code === 'Space') e.preventDefault(); // stop the page scrolling
   if (e.code === 'KeyQ' && !e.repeat) gun.equipped = !gun.equipped; // draw or put away the gun
+  if (e.code === 'KeyE' && !e.repeat) toggleFridge(house, player.group.position); // open or shut the fridge
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
@@ -112,6 +120,11 @@ const MOUSE_SENSITIVITY = 0.0025;
 // front, ?crouch to hold him in a crouch, ?walk or ?run to move him sideways,
 // and ?gun, ?aim and ?fire to draw, aim and keep firing the gun.
 const testView = new URLSearchParams(location.search);
+if (testView.has('at')) { // ?at=x,z starts the player somewhere else
+  const [x, z] = testView.get('at').split(',').map(Number);
+  player.group.position.set(x, 0, z);
+}
+if (testView.has('yaw')) cam.yaw = Number(testView.get('yaw')); // ?yaw=1.5 turns the camera
 if (testView.has('front')) {
   player.group.rotation.y = 0;
   Object.assign(cam, { distance: Number(testView.get('front')) || 3, height: 1.2, shoulder: 0, pitch: 0.15 });
@@ -146,7 +159,7 @@ canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
 }, { passive: false });
 
-const lookAt = new THREE.Vector3();
+const lookAt = new THREE.Vector3(), camToLook = new THREE.Vector3();
 function updateCamera() {
   const p = player.group.position;
   const rx = Math.cos(cam.yaw), rz = -Math.sin(cam.yaw); // camera right
@@ -164,6 +177,14 @@ function updateCamera() {
     Math.max(0.3, lookAt.y + Math.sin(cam.pitch) * distance), // never below ground
     lookAt.z + Math.cos(cam.yaw) * flat
   );
+  // Indoors, stay under the ceiling.
+  camera.position.y = Math.min(camera.position.y, ceilingAt(p) - 0.25);
+  // Don't let a wall come between the camera and the character: move in closer instead.
+  camToLook.copy(camera.position).sub(lookAt);
+  const wanted = camToLook.length();
+  camToLook.divideScalar(wanted);
+  const clear = Math.min(rayToObstacle(lookAt, camToLook, wanted), roomLimit(p, lookAt, camToLook, wanted));
+  if (clear < wanted) camera.position.copy(lookAt).addScaledVector(camToLook, Math.max(0.25, clear - 0.2));
   camera.lookAt(lookAt);
 }
 
@@ -230,6 +251,11 @@ function step(dt) {
     reach = -camera.position.y / aimDir.y;
     hitsGround = true;
   }
+  const wall = rayToObstacle(camera.position, aimDir, reach); // bullets stop at walls
+  if (wall < reach) {
+    reach = wall;
+    hitsGround = false;
+  }
   const struck = findNpcHit(npcs, camera.position, aimDir, reach);
   if (struck) {
     reach = struck.distance;
@@ -266,6 +292,8 @@ function step(dt) {
   crosshair.style.display = gun.equipped ? 'block' : 'none';
 
   updatePlayer(player, input, cam.yaw, dt, MAP_SIZE / 2);
+  updateHouse(house, player.group.position, dt);
+  usePrompt.style.display = nearFridge(house, player.group.position) ? 'block' : 'none';
   updateGun(gun, player, dt);
   updateNpcs(npcs, player.group.position, dt, onStrike);
   updateCamera();

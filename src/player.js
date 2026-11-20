@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { pushOut, floorAt } from './world.js';
 
 const WALK_SPEED = 2.4;
 const SPRINT_SPEED = 6.5;
@@ -333,6 +334,7 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   const limit = halfMap - 1;
   group.position.x = THREE.MathUtils.clamp(group.position.x, -limit, limit);
   group.position.z = THREE.MathUtils.clamp(group.position.z, -limit, limit);
+  pushOut(group.position, 0.35); // can't walk through walls
 
   // Jump: a quick dip of the knees to push off, then up. On the way down the
   // knees bend again to absorb the landing.
@@ -345,12 +347,15 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
       player.onGround = false;
     }
   }
-  if (!player.onGround) {
+  const floor = floorAt(group.position); // the ground, or a raised floor such as inside the house
+  if (player.onGround) {
+    group.position.y += (floor - group.position.y) * Math.min(1, 18 * dt); // step up or down
+  } else {
     player.velocityY -= GRAVITY * dt;
     group.position.y += player.velocityY * dt;
-    if (group.position.y <= 0) {
+    if (group.position.y <= floor) {
       player.land = Math.min(1, -player.velocityY / JUMP_SPEED);
-      group.position.y = 0;
+      group.position.y = floor;
       player.velocityY = 0;
       player.onGround = true;
     }

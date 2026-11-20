@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { turnBoneBy } from './player.js';
+import { pushOut, floorAt } from './world.js';
 
 const FOLDER = `${import.meta.env.BASE_URL}models/people/`;
 
@@ -109,6 +110,7 @@ function place(npc, around) {
     THREE.MathUtils.clamp(around.x + Math.cos(angle) * distance, -limit, limit), 0,
     THREE.MathUtils.clamp(around.z + Math.sin(angle) * distance, -limit, limit)
   );
+  pushOut(npc.group.position, 0.6); // not inside a building
   npc.group.rotation.y = Math.random() * Math.PI * 2;
   npc.tilt.rotation.set(0, 0, 0);
   npc.tilt.position.y = 0;
@@ -129,6 +131,7 @@ function wander(npc, near, far) {
     THREE.MathUtils.clamp(position.z + Math.sin(angle) * distance, -limit, limit)
   );
   npc.state = 'walk';
+  npc.timer = 15; // give up if something is in the way
 }
 
 // testSpot: if given, the first NPC stands still there (used for checking things work).
@@ -271,7 +274,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike) {
     } else if (npc.state === 'walk') {
       const dx = npc.target.x - position.x, dz = npc.target.z - position.z;
       const distance = Math.hypot(dx, dz);
-      if (distance < 0.5) {
+      if (distance < 0.5 || npc.timer <= 0) {
         npc.state = 'idle';
         npc.timer = 1.5 + Math.random() * 4;
       } else {
@@ -311,6 +314,9 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike) {
         if (npc.still) { npc.state = 'idle'; npc.timer = 99; } else wander(npc, 10, 18); // point made; they walk off
       }
     }
+
+    pushOut(position, 0.35); // can't walk through walls
+    position.y = floorAt(position);
 
     if (heading !== null) {
       // Turn to face that way, taking the short way round.

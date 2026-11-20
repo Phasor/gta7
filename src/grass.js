@@ -19,6 +19,10 @@ const LAYERS = [
   { size: 640, blades: 300000, width: 0.5,  height: 1.3,  fade: [36, 83, 190, 310] },
 ];
 
+// Rectangles where no grass grows (under buildings, driveways and paths).
+// Each is (min x, min z, max x, max z); whoever builds something fills one in.
+export const clearings = [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()];
+
 const SEGMENTS = 4; // pieces per blade: more pieces give a smoother curve
 
 // One blade: a strip that narrows to a point. y runs 0 (root) to 1 (tip).
@@ -67,6 +71,7 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
       fadeRange: { value: new THREE.Vector4(...fade) },
       tallness: { value: height },
       time: { value: 0 },
+      clearings: { value: clearings },
       sunDir: { value: sunDirection.clone().normalize() },
       sunColor: { value: new THREE.Color(PALETTE.sunLight) },
       rootColor: { value: new THREE.Color(PALETTE.grassRoot) },
@@ -80,6 +85,7 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
       uniform vec3 center;
       uniform vec4 fadeRange;
       uniform float areaSize, tallness, time;
+      uniform vec4 clearings[4];
       attribute vec2 spot;
       attribute vec4 rnd;
       varying float vHeight;   // 0 at the root, 1 at the tip
@@ -122,6 +128,12 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
         // On bare dirt only a few stunted, dried-out blades survive.
         float dirt = dirtAmount(ground);
         tall *= 1.0 - dirt * mix(0.8, 1.0, sizeB);
+
+        // Nothing grows where something has been built.
+        for (int i = 0; i < 4; i++) {
+          vec4 c = clearings[i];
+          if (ground.x > c.x && ground.x < c.z && ground.y > c.y && ground.y < c.w) tall = 0.0;
+        }
 
         float t = position.y;
         float facing = rnd.x * 6.2832;

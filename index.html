@@ -16,6 +16,11 @@
         position: fixed; inset: 0; opacity: 0; pointer-events: none;
         background: radial-gradient(ellipse at center, transparent 45%, rgba(190, 30, 20, 0.6));
       }
+      #prompt {
+        display: none; position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%);
+        font: 15px system-ui, sans-serif; color: #f3e9d2; background: rgba(40, 30, 20, 0.7);
+        padding: 8px 14px; border-radius: 6px; pointer-events: none;
+      }
       #hint {
         position: fixed; left: 12px; bottom: 12px;
         font: 13px system-ui, sans-serif; color: #f3e9d2;
@@ -27,6 +32,7 @@
   <body>
     <div id="hurt"></div>
     <div id="crosshair"></div>
+    <div id="prompt">Press E to open or close the fridge</div>
     <div id="hint">Click the game, then: WASD to walk · Mouse to look · Shift to run · Space to jump · Hold C to crouch · Q: gun · Right mouse: aim · Left mouse: shoot · Esc to free the mouse</div>
     <script type="module" src="/src/main.js"></script>
   </body>
