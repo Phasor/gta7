@@ -18,7 +18,7 @@ const FOLDER = `${import.meta.env.BASE_URL}models/people/`;
 // Who is out there. `clothes` turns the colours of the outfit round the colour
 // wheel (in degrees) so the same body gives several different looks.
 // `home` is where they hang about: the first six live round Palm Ave, and the
-// rest among the skyscrapers of Palm City.
+// rest among the skyscrapers of Miami.
 const CITY_HUES = [0, 140, 200, 250, 90];
 const PEOPLE = [
   { kind: 'woman', clothes: 0, height: 1.0 },

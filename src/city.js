@@ -1,4 +1,4 @@
-// Palm City: the Miami-style downtown at the end of the road. Ten buildings,
+// Miami: the downtown at the end of the road. Ten buildings,
 // all different: pastel art-deco hotels with neon signs and fins, white condo
 // blocks with balconies, and glass towers. Their windows glow at night.
 //
@@ -489,7 +489,7 @@ export function createCity(scene, startX) {
 
   // The welcome sign as you drive in.
   for (const pz of [-12.2, -17.8]) { block(scene, kit.metal, 0.3, 5.2, 0.3, startX - 22, 2.6, pz); addObstacle(startX - 22.2, startX - 21.8, pz - 0.2, pz + 0.2, 5.5); }
-  block(scene, new THREE.MeshBasicMaterial({ map: label('WELCOME TO PALM CITY', 'THE SUNSHINE CAPITAL', '#f2659a', '#fff8e8', 1024, 256) }), 0.2, 2.2, 7.4, startX - 22, 4.3, -15);
+  block(scene, new THREE.MeshBasicMaterial({ map: label('WELCOME TO MIAMI', 'THE SUNSHINE CAPITAL', '#f2659a', '#fff8e8', 1024, 256) }), 0.2, 2.2, 7.4, startX - 22, 4.3, -15);
 
   const X = (i) => startX + 10 + i * 52; // five plots down each side of the street
   const buildings = [
@@ -502,8 +502,8 @@ export function createCity(scene, startX) {
       tiers: [{ floors: 5, inset: 0 }, { floors: 2, inset: 2.5 }], ledges: true, fin: 'TROPIC', steps: true },
     { side: 'far', x: X(3), w: 34, d: 17, style: 'condo', kind: 'condo', wall: 0xf7c9a8, accent: 0xf2f0ea, glass: '#3a5f6e', neon: 0xff8a5a, name: 'CORAL SANDS',
       tiers: [{ floors: 14, inset: 0 }], balconies: 0xff9a8a, penthouse: true, roofSign: 'CORAL SANDS' },
-    { side: 'far', x: X(4), w: 28, d: 22, style: 'glass', kind: 'bank', wall: 0x1c2f52, accent: 0xc9ccd0, glass: '#27477a', neon: 0xffd23a, name: 'PALM CITY BANK',
-      tiers: [{ floors: 22, inset: 0 }], helipad: true, roofSign: 'PALM CITY BANK' },
+    { side: 'far', x: X(4), w: 28, d: 22, style: 'glass', kind: 'bank', wall: 0x1c2f52, accent: 0xc9ccd0, glass: '#27477a', neon: 0xffd23a, name: 'MIAMI BANK',
+      tiers: [{ floors: 22, inset: 0 }], helipad: true, roofSign: 'MIAMI BANK' },
     // Near side.
     { side: 'near', x: X(0), w: 30, d: 18, style: 'deco', kind: 'hotel', wall: 0xa8e6cf, accent: 0xf7e08a, glass: '#2d4a55', neon: 0xffe14f, name: 'OCEAN BREEZE HOTEL',
       tiers: [{ floors: 4, inset: 0 }], ledges: true, corner: true, roofSign: 'OCEAN BREEZE' },

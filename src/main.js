@@ -12,7 +12,7 @@ import { createNeighbourhood } from './neighbourhood.js';
 import { createGunShop, updateGunShop } from './gunshop.js';
 import { createCity, updateCity } from './city.js';
 import { sfx, updateSound } from './sound.js';
-import { createSea, updateSea } from './sea.js';
+import { createSea, updateSea, updateJetSkis, jetSkiNear, seaLanding } from './sea.js';
 import { createTurfs, updateTurfs } from './gangs.js';
 import { createPoliceStation, updatePoliceStation } from './policestation.js';
 import { createGym, updateGym, stationNear, TRAINING } from './gym.js';
@@ -20,11 +20,11 @@ import { createLake, updateLake, boatNear, landingSpot, SEAT } from './lake.js';
 import { createAlligators, updateAlligators } from './alligator.js';
 import { createTruck, updateTruck, setEngine } from './truck.js';
 import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt } from './world.js';
-import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke } from './gun.js';
+import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke, emitBloodMist } from './gun.js';
 import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, playStrike, debug as npcDebug } from './npc.js';
 
-const MAP_SIZE = 2140;    // playable area, metres along each side (big enough to reach the city)
-const GROUND_SIZE = 2400; // the grass carries on past the edge so the horizon looks endless
+const MAP_SIZE = 2800;    // playable area, metres along each side (big enough to reach the city)
+const GROUND_SIZE = 3200; // the grass carries on past the edge so the horizon looks endless
 
 // --- Renderer ---------------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias: false }); // the composer smooths edges instead
@@ -118,13 +118,13 @@ const gasStation = createGasStation(scene, 54, -19);
 // Ten more houses along the street, all different.
 createNeighbourhood(scene);
 
-// Palm City: ten Miami-style buildings about half a minute's drive along the road.
+// Miami: ten buildings about half a minute's drive along the road.
 const city = createCity(scene, 640);
 
 // The sea and its beach, past the far end of the city.
 const seaParts = createSea(scene, 962, scene.fog, SUN_OFFSET);
 
-// The two gangs' corners: the Vipers on Palm Ave and the Sharks in Palm City.
+// The two gangs' corners: the Vipers on Palm Ave and the Sharks in Miami.
 createTurfs(scene);
 
 // The gun shop, across the road from the petrol station.
@@ -527,6 +527,7 @@ function hurtPlayer(amount) {
   health = Math.max(0, health - amount);
   lastHurtAt = gameTime;
   hurt = 1;
+  bleed();
   showHealth();
   if (health > 0) return;
   downed = true;
@@ -550,6 +551,108 @@ function healOverTime(dt) {
   if (health >= 100 || downed || gameTime - lastHurtAt < 6) return;
   health = Math.min(100, health + 4 * dt);
   showHealth();
+}
+// --- Blood ----------------------------------------------------------------------------------
+// Kept restrained and realistic. A bullet leaves a dark, wet stain soaking into his
+// clothes at the wound, a brief fine mist at the moment of impact, and a few small
+// stains on the ground. Nothing sprays and nothing covers the screen.
+
+// A blood stain painted in code: an uneven dark clot, thinner and redder toward its
+// ragged edge, with a few specks thrown off it and (on clothes) a run dripping down.
+function bloodStain(withRun) {
+  const size = 128, canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const blob = (x, y, r, colour) => { ctx.fillStyle = colour; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); };
+  const lobes = 5 + Math.floor(Math.random() * 3), tilt = Math.random() * 6;
+  const reach = (angle) => 20 + 9 * Math.sin(angle * lobes + tilt) + 5 * Math.sin(angle * 2 + tilt * 2); // the ragged outline
+  for (let i = 0; i < 260; i++) {                    // thin outer soak
+    const angle = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * reach(angle);
+    blob(64 + Math.cos(angle) * r, 58 + Math.sin(angle) * r, 3 + Math.random() * 5, 'rgba(92,9,7,0.2)');
+  }
+  for (let i = 0; i < 120; i++) {                    // thick dark middle
+    const angle = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * reach(angle) * 0.55;
+    blob(64 + Math.cos(angle) * r, 58 + Math.sin(angle) * r, 2.5 + Math.random() * 4, 'rgba(30,3,3,0.3)');
+  }
+  for (let i = 0; i < 7; i++) {                      // specks thrown off it
+    const angle = Math.random() * Math.PI * 2, r = 34 + Math.random() * 18;
+    blob(64 + Math.cos(angle) * r, 58 + Math.sin(angle) * r, 0.8 + Math.random() * 1.8, 'rgba(70,6,5,0.85)');
+  }
+  if (withRun) {                                     // a run or two trickling down
+    for (let run = 0; run < 1 + Math.floor(Math.random() * 2); run++) {
+      const x = 56 + Math.random() * 16, length = 22 + Math.random() * 32, width = 2 + Math.random() * 1.6;
+      ctx.fillStyle = 'rgba(52,5,4,0.85)';
+      ctx.fillRect(x - width / 2, 62, width, length);
+      blob(x, 62 + length, width * 0.85, 'rgba(40,4,3,0.9)');
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  // Low roughness makes it catch the light like something wet.
+  return new THREE.MeshStandardMaterial({ map: texture, transparent: true, depthWrite: false, roughness: 0.22, polygonOffset: true, polygonOffsetFactor: -4 });
+}
+const clothStains = [bloodStain(true), bloodStain(true), bloodStain(true)];
+const groundStains = [bloodStain(false), bloodStain(false), bloodStain(false)];
+const stainShape = new THREE.PlaneGeometry(1, 1);
+
+// Stains on his clothes, at the wounds. They stay until he has healed.
+const wounds = [];
+function addWound() {
+  const chest = player.bones?.spine2;
+  if (!chest || wounds.length >= 5) return;
+  const wound = new THREE.Mesh(stainShape, clothStains[wounds.length % clothStains.length]);
+  const size = 0.1 + Math.random() * 0.05;
+  wound.scale.set(size, size * 1.15, 1);
+  wound.position.set((Math.random() - 0.5) * 0.2, -0.04 + Math.random() * 0.18, 0.138 + wounds.length * 0.0015);
+  chest.add(wound);
+  wounds.push(wound);
+}
+function clearWounds() {
+  for (const wound of wounds) wound.parent?.remove(wound);
+  wounds.length = 0;
+}
+
+// Small stains on the ground. Each dries darker and fades away after a while.
+const spots = Array.from({ length: 18 }, (_, i) => {
+  const spot = new THREE.Mesh(stainShape, groundStains[i % groundStains.length].clone());
+  spot.rotation.x = -Math.PI / 2;
+  spot.visible = false;
+  spot.renderOrder = 2;
+  spot.userData.life = 0;
+  scene.add(spot);
+  return spot;
+});
+let nextSpot = 0, dripTimer = 0;
+function stainGround(x, y, z, size) {
+  const spot = spots[nextSpot++ % spots.length];
+  spot.position.set(x, y + 0.03, z);
+  spot.rotation.z = Math.random() * Math.PI * 2;
+  spot.scale.set(size, size, 1);
+  spot.userData.life = 45;
+  spot.visible = true;
+}
+const mistSpot = new THREE.Vector3();
+function bleed() {
+  const at = player.group.position;
+  addWound();
+  emitBloodMist(gun, mistSpot.set(at.x, at.y + 1.25, at.z));
+  for (let i = 0; i < 2; i++) stainGround(at.x + (Math.random() - 0.5) * 0.7, at.y, at.z + (Math.random() - 0.5) * 0.7, 0.12 + Math.random() * 0.16);
+}
+function updateBlood(dt) {
+  for (const spot of spots) {
+    if (!spot.visible) continue;
+    spot.userData.life -= dt;
+    spot.material.opacity = Math.min(1, spot.userData.life / 8);
+    if (spot.userData.life <= 0) spot.visible = false;
+  }
+  // Badly hurt: the odd drip marks where he has been. Fully healed: the stains are gone.
+  dripTimer -= dt;
+  if (health < 45 && !downed && dripTimer <= 0 && wounds.length && !driving && !boating) {
+    dripTimer = 0.9;
+    const at = player.group.position;
+    stainGround(at.x + (Math.random() - 0.5) * 0.25, at.y, at.z + (Math.random() - 0.5) * 0.25, 0.05 + Math.random() * 0.05);
+  }
+  if (health >= 100 && wounds.length) clearWounds();
 }
 // Where he has to stand to use things.
 const near = (px, pz, reach) => Math.hypot(player.group.position.x - px, player.group.position.z - pz) < reach;
@@ -606,7 +709,7 @@ function toggleDriving() {
   if (boating) {
     if (Math.abs(boating.speed) > 4) return; // too fast to get out
     // Onto the jetty or the bank if one is close; otherwise over the side into the water.
-    const spot = landingSpot(lake, boating) || new THREE.Vector3(
+    const spot = (boating.jetSki ? seaLanding(seaParts, boating) : landingSpot(lake, boating)) || new THREE.Vector3(
       boating.group.position.x + Math.cos(boating.heading) * 1.5, 0, boating.group.position.z - Math.sin(boating.heading) * 1.5);
     boating.throttle = 0;
     setEngine(boating, false);
@@ -615,7 +718,7 @@ function toggleDriving() {
     here.copy(spot);
     return;
   }
-  const boat = !driving && player.downTime < 0 ? boatNear(lake, here) : null;
+  const boat = !driving && player.downTime < 0 ? boatNear(lake, here) || jetSkiNear(seaParts, here) : null;
   if (boat) {
     boating = boat;
     setEngine(boat, true);
@@ -976,14 +1079,16 @@ function step(dt) {
   if (testView.has('drive') && !driving && player.bones) toggleDriving(); // ?drive starts at the wheel with the pedal down
   if (testView.has('sail') && !boating && player.bones) { boating = lake.boats[0]; } // ?sail starts in a boat with the throttle open
   updateLake(lake, time, dt, boating, { throttle: testView.has('sail') ? 1 : input.z, steer: testView.has('sail') ? 0.25 : -input.x, cut: input.jump });
+  updateJetSkis(seaParts, time, dt, boating, { throttle: testView.has('ski') ? 1 : input.z, steer: testView.has('ski') ? 0.12 : -input.x, brake: input.jump });
+  if (testView.has('ski') && !boating && player.bones) boating = seaParts.skis[0]; // ?ski starts on a jet ski at full throttle
   if (boating) {
     // He stands in the boat, which carries him (and the camera) along.
     // He sits on the stern bench with a hand on the tiller.
     const at = boating.group.position;
     player.group.position.set(
-      at.x + Math.sin(boating.heading) * SEAT.back,
-      at.y + SEAT.height + 0.1 - (HIP_HEIGHT - SIT_DROP),
-      at.z + Math.cos(boating.heading) * SEAT.back
+      at.x + Math.sin(boating.heading) * (boating.seat ?? SEAT).back,
+      at.y + (boating.seat ?? SEAT).height + 0.1 - (HIP_HEIGHT - SIT_DROP),
+      at.z + Math.cos(boating.heading) * (boating.seat ?? SEAT).back
     );
     player.group.rotation.set(0, boating.heading, 0);
     sitPlayer(player, dt);
@@ -1061,12 +1166,14 @@ function step(dt) {
   updateSea(seaParts, time);
   updateTurfs(time);
   healOverTime(dt);
+  if (testView.has('bleed') && player.bones && Math.floor(gameTime / 1.5) !== Math.floor((gameTime - dt) / 1.5)) hurtPlayer(8); // ?bleed: take a hit every so often, to check the blood
+  updateBlood(dt);
   updatePoliceStation(policeStation, player.group.position, dt);
   updateGym(gym, player.group.position, dt, time);
   const byTruck = !driving && Math.hypot(player.group.position.x - truck.group.position.x, player.group.position.z - truck.group.position.z) < 3.4;
   const byFridge = !driving && !boating && nearFridge(house, player.group.position);
-  const byBoat = !driving && !boating && !!boatNear(lake, player.group.position);
-  if (boating) speedo.textContent += ` · throttle ${Math.round((boating.throttle || 0) * 100)}%`;
+  const byBoat = !driving && !boating && !!(boatNear(lake, player.group.position) || jetSkiNear(seaParts, player.group.position));
+  if (boating && !boating.jetSki) speedo.textContent += ` · throttle ${Math.round((boating.throttle || 0) * 100)}%`;
   const canLand = boating && Math.abs(boating.speed) < 4;
   const byAl = !driving && !boating && atCounter(), byCash = !driving && !boating && atCashMachine();
   if (shopOpen && !byAl) setShop(false); // walking away ends the conversation
@@ -1108,7 +1215,7 @@ function step(dt) {
   if (tipsy > 0) cam.yaw += Math.sin(time * 0.7) * 0.12 * Math.min(1, tipsy / 5) * dt; // the world drifts about
   if (energy > 0) { energy -= dt; if (energy <= 0) player.boost = 1; }
   if (testView.has('shop') && byAl && !shopOpen) setShop(true); // ?shop opens Big Al's menu straight away
-  usePrompt.textContent = canLand ? 'Press F to get out' : byBoat ? 'Press F to take the boat out' : byTruck ? 'Press F to drive the truck'
+  usePrompt.textContent = canLand ? 'Press F to get out' : byBoat ? (jetSkiNear(seaParts, player.group.position) ? 'Press F to ride the jet ski' : 'Press F to take the boat out') : byTruck ? 'Press F to drive the truck'
     : byBed ? (isNight() ? 'Press E to sleep until morning' : 'You can sleep here once it gets dark (6 in the evening)') : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to collect your wages' : 'Press E to open or close the fridge';
   usePrompt.style.display = ((byTruck && !boating) || byFridge || byBoat || canLand || byCash || byAl || byMart || gymSpot || byBed) && !shopOpen && !martOpen ? 'block' : 'none';
   updateGun(gun, player, dt);

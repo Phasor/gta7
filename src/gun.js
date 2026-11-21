@@ -465,3 +465,11 @@ export function emitSmoke(gun, position, size = 1) {
   drift.set((Math.random() - 0.5) * 0.2, 0.35, (Math.random() - 0.5) * 0.2);
   puff(gun.smoke, position, drift, 0.04 * size, 0.3 * size, 1.8, SMOKE_COLOR, 0.4);
 }
+
+// A brief, fine red mist where a bullet strikes someone.
+export function emitBloodMist(gun, position) {
+  for (let i = 0; i < 3; i++) {
+    drift.set((Math.random() - 0.5) * 0.9, 0.2 + Math.random() * 0.4, (Math.random() - 0.5) * 0.9);
+    puff(gun.smoke, position, drift, 0.03, 0.14 + Math.random() * 0.1, 0.35, 0x4a0605, 0.45);
+  }
+}

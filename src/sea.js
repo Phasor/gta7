@@ -1,4 +1,4 @@
-// The sea: past the far end of Palm City the road runs out onto a sandy beach
+// The sea: past the far end of Miami the road runs out onto a sandy beach
 // and turquoise water that goes on to the horizon. It is beyond the last
 // buildings, so nothing in the city is in its way.
 // On the beach: palm trees, umbrellas and sun loungers, a lifeguard tower, a
@@ -240,8 +240,20 @@ export function createSea(scene, shoreX, fog, sunDirection) {
     floats.push({ object: boat, height: WATER, phase: bx, lean: 0.05 });
   }
 
+  // Jet skis moored along the pier. Walk out, stand beside one and press F to ride it.
+  const skis = [[26, -1, 0xf2c230, 0x1c1d1f], [36, 1, 0xe0483a, 0xf2f0e6], [46, -1, 0x2f8fd0, 0xf2f0e6], [56, 1, 0xf2f0e6, 0x8a4fd0]].map(([out, side, hull, trim], i) => {
+    const ski = makeJetSki(hull, trim);
+    ski.position.set(shoreX + out, WATER, pierZ + side * 3.4);
+    ski.rotation.order = 'YXZ';
+    const heading = Math.PI / 2; // pointing out to sea
+    ski.rotation.y = heading;
+    const wake = makeSpray();
+    group.add(ski, wake);
+    return { group: ski, wake, heading, speed: 0, steer: 0, phase: i * 1.7, engine: null, jetSki: true, seat: { back: -0.25, height: 0.62 } };
+  });
+
   scene.add(group);
-  return { water, floats };
+  return { water, floats, skis, shoreX, pier: { z: pierZ, from: pierFrom, to: pierTo } };
 }
 
 // Each frame: the waves move, and anything floating bobs on them.
@@ -251,4 +263,112 @@ export function updateSea(seaParts, time) {
     float.object.position.y = float.height + Math.sin(time * 1.2 + float.phase) * 0.12;
     float.object.rotation.z = Math.sin(time * 0.9 + float.phase) * float.lean;
   }
+}
+
+// --- Jet skis --------------------------------------------------------------------------
+
+const SKI_TOP_SPEED = 32; // metres per second, about 70 mph
+
+// A jet ski. Faces +Z, with its waterline at height 0.
+function makeJetSki(hullColour, trimColour) {
+  const ski = new THREE.Group();
+  const paint = (color, roughness = 0.35) => new THREE.MeshStandardMaterial({ color, roughness, metalness: 0.2 });
+  const hull = paint(hullColour), trim = paint(trimColour), black = paint(0x151617, 0.7);
+  // Hull: a long shape, pointed at the bow and rising toward it.
+  const outline = new THREE.Shape();
+  outline.moveTo(-0.55, -1.5); outline.lineTo(0.55, -1.5); outline.lineTo(0.6, 0.4);
+  outline.quadraticCurveTo(0.45, 1.5, 0, 1.75); outline.quadraticCurveTo(-0.45, 1.5, -0.6, 0.4); outline.lineTo(-0.55, -1.5);
+  const hullMesh = new THREE.Mesh(new THREE.ExtrudeGeometry(outline, { depth: 0.42, bevelEnabled: true, bevelThickness: 0.1, bevelSize: 0.1, bevelSegments: 3 }), hull);
+  hullMesh.rotation.x = Math.PI / 2;   // lay the outline flat: its length runs along Z
+  hullMesh.position.y = 0.36;
+  hullMesh.castShadow = true;
+  ski.add(hullMesh);
+  block(ski, black, 1.3, 0.1, 3.0, 0, 0.0, -0.1);                 // dark underside
+  block(ski, trim, 0.62, 0.2, 1.5, 0, 0.48, 0.75);                // raised bonnet
+  block(ski, black, 0.42, 0.14, 1.25, 0, 0.56, -0.55);            // saddle
+  block(ski, black, 0.5, 0.12, 0.3, 0, 0.5, -1.25);               // back of the seat
+  block(ski, trim, 0.16, 0.36, 0.2, 0, 0.72, 0.42).rotation.x = -0.35; // steering column
+  block(ski, black, 0.82, 0.05, 0.06, 0, 0.9, 0.36);              // handlebars
+  for (const side of [-1, 1]) block(ski, black, 0.14, 0.07, 0.07, side * 0.4, 0.9, 0.36);
+  block(ski, new THREE.MeshStandardMaterial({ color: 0x0d1318, roughness: 0.1, metalness: 0.6 }), 0.4, 0.16, 0.04, 0, 0.84, 0.62).rotation.x = -0.6; // little windscreen
+  for (const side of [-1, 1]) block(ski, trim, 0.03, 0.16, 2.2, side * 0.66, 0.3, -0.2);          // stripe along each side
+  block(ski, black, 0.2, 0.14, 0.2, 0, 0.12, -1.6);               // jet nozzle
+  return ski;
+}
+
+// The plume of spray a jet ski throws up behind it.
+function makeSpray() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  const fade = ctx.createLinearGradient(0, 0, 0, 128);
+  fade.addColorStop(0, 'rgba(255,255,255,0.95)');
+  fade.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = fade;
+  ctx.beginPath();
+  ctx.moveTo(26, 0); ctx.lineTo(38, 0); ctx.lineTo(64, 128); ctx.lineTo(0, 128);
+  ctx.fill();
+  const spray = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 10),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, opacity: 0, depthWrite: false }));
+  spray.geometry.rotateX(-Math.PI / 2);
+  spray.geometry.translate(0, 0, -6.6); // trails out behind
+  spray.renderOrder = 2;
+  return spray;
+}
+
+// input: { throttle: -1..1, steer: -1 (right) .. 1 (left), brake }. Hold W to go, like the truck.
+export function updateJetSkis(seaParts, time, dt, ridden, input) {
+  const { shoreX, pier } = seaParts;
+  for (const ski of seaParts.skis) {
+    const position = ski.group.position;
+    if (ski === ridden) {
+      if (input.throttle > 0) ski.speed += 15 * (1 - ski.speed / SKI_TOP_SPEED) * dt;
+      else if (input.throttle < 0) ski.speed -= (ski.speed > 0.5 ? 16 : 4) * dt;
+      if (input.brake) ski.speed -= ski.speed * Math.min(1, 3 * dt);
+      ski.steer += (input.steer - ski.steer) * Math.min(1, 5 * dt);
+      ski.heading += ski.steer * 1.7 * THREE.MathUtils.clamp(ski.speed / 6, -1, 1) * dt; // only turns while moving
+    } else {
+      ski.steer *= 1 - Math.min(1, 3 * dt);
+    }
+    ski.speed -= ski.speed * 0.5 * dt; // the water slows it down
+    ski.speed = Math.max(ski.speed, -3);
+    position.x += Math.sin(ski.heading) * ski.speed * dt;
+    position.z += Math.cos(ski.heading) * ski.speed * dt;
+
+    // Stay on the water: it runs aground on the beach, stops at the edge of the map, and bumps off the pier.
+    if (position.x < shoreX + 3) { position.x = shoreX + 3; ski.speed *= 1 - Math.min(1, 5 * dt); }
+    position.x = Math.min(position.x, shoreX + 420);
+    position.z = THREE.MathUtils.clamp(position.z, -1100, 1100);
+    if (position.x < pier.to + 1.8 && Math.abs(position.z - pier.z) < 3.0) {
+      if (position.x > pier.to + 0.8) position.x = pier.to + 1.8;
+      else position.z = pier.z + (position.z < pier.z ? -3.0 : 3.0);
+      ski.speed *= 1 - Math.min(1, 4 * dt);
+    }
+
+    // Bobbing, leaning into turns, and the bow lifting at speed.
+    position.y = WATER + Math.sin(time * 1.8 + ski.phase) * 0.04 + Math.min(ski.speed, 25) * 0.004;
+    ski.group.rotation.y = ski.heading;
+    ski.group.rotation.x = -Math.min(Math.max(ski.speed, 0), 22) * 0.008 + Math.sin(time * 1.4 + ski.phase) * 0.02;
+    ski.group.rotation.z = -ski.steer * Math.min(ski.speed, 20) * 0.022 + Math.sin(time * 1.1 + ski.phase) * 0.03;
+    ski.wake.position.set(position.x, WATER + 0.03, position.z);
+    ski.wake.rotation.y = ski.heading;
+    ski.wake.material.opacity = THREE.MathUtils.clamp((ski.speed - 1.5) / 14, 0, 0.85);
+    if (ski.engine) ski.engine.tone.frequency.setTargetAtTime(95 + Math.abs(ski.speed) * 7, ski.engine.context.currentTime, 0.08); // a higher whine than the truck
+  }
+}
+
+// The jet ski within reach of `position`, if any.
+export function jetSkiNear(seaParts, position) {
+  return seaParts.skis.find((ski) => Math.hypot(ski.group.position.x - position.x, ski.group.position.z - position.z) < 3.8) || null;
+}
+
+// Where someone getting off `ski` would step to: onto the pier if alongside, or the beach if close. Null out at sea.
+export function seaLanding(seaParts, ski) {
+  const position = ski.group.position, { pier, shoreX } = seaParts;
+  if (Math.abs(position.z - pier.z) < 5 && position.x > pier.from && position.x < pier.to + 3) {
+    return new THREE.Vector3(THREE.MathUtils.clamp(position.x, pier.from + 1, pier.to - 1), PIER, pier.z + (position.z < pier.z ? -0.8 : 0.8));
+  }
+  if (position.x < shoreX + 9) return new THREE.Vector3(shoreX - 1.5, SAND, position.z);
+  return null;
 }

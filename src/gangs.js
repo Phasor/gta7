@@ -8,7 +8,7 @@ import { block, canvasTexture, speckle } from './house.js';
 // turf: where they hang out. front: +1 if they face toward +Z, -1 toward -Z (always toward the road).
 export const GANGS = {
   vipers: { name: 'Palm Ave Vipers', colour: 0xd9281e, clothes: 0, turf: [-86, 17], front: -1 },
-  sharks: { name: 'Palm City Sharks', colour: 0x2f6fe0, clothes: 200, turf: [729, -27], front: 1 },
+  sharks: { name: 'Miami Sharks', colour: 0x2f6fe0, clothes: 200, turf: [729, -27], front: 1 },
 };
 // Where each of a gang's four members stands, measured from the middle of the turf.
 export const POSTS = [[-2.6, 2.2], [-0.8, 0.6], [1.2, 1.8], [3.0, 0.4]];
