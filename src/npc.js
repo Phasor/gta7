@@ -10,6 +10,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { turnBoneBy } from './player.js';
 import { pushOut, floorAt, addObstacle } from './world.js';
+import { GANGS, POSTS } from './gangs.js';
+import { sfx } from './sound.js';
 
 const FOLDER = `${import.meta.env.BASE_URL}models/people/`;
 
@@ -41,6 +43,15 @@ const DAMAGE = 34;        // three shots
 const RADIUS = 0.35;      // the body counts as an upright cylinder for bullets
 const HEIGHT = 1.75;
 const RESPAWN_TIME = 7;
+const GANG_RESPAWN = 45;   // a gang member who is shot is replaced after this long
+
+// Four armed members for each gang, standing on their turf.
+for (const [key, gang] of Object.entries(GANGS)) {
+  POSTS.forEach(([px, pz], i) => PEOPLE.push({
+    kind: 'man', clothes: gang.clothes, height: 0.98 + i * 0.025, gang: key,
+    post: [gang.turf[0] + px, gang.turf[1] - gang.front * pz],
+  }));
+}
 const STRIKE_RANGE = 0.8; // how close they get before swinging
 const STRIKE_TIME = 0.55; // seconds for the whole swing
 
@@ -125,6 +136,7 @@ function place(npc, around) {
     THREE.MathUtils.clamp(around.z + Math.sin(angle) * distance, -limit, limit)
   );
   pushOut(npc.group.position, 0.6); // not inside a building
+  if (npc.post) npc.group.position.copy(npc.post); // gang members always come back to their turf
   npc.group.rotation.y = Math.random() * Math.PI * 2;
   npc.tilt.rotation.set(0, 0, 0);
   npc.tilt.position.y = 0;
@@ -199,6 +211,20 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
     }
     const people = testKind === 'man' ? [PEOPLE[1], PEOPLE[0], ...PEOPLE.slice(2)] : PEOPLE;
 
+    // Bullet streaks for the gangs' guns.
+    const crews = {};
+    npcs.crews = crews;
+    npcs.tracers = Array.from({ length: 8 }, () => {
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+        new THREE.LineBasicMaterial({ color: 0xfff1c4, transparent: true, opacity: 0, fog: false })
+      );
+      line.frustumCulled = false;
+      scene.add(line);
+      return line;
+    });
+    npcs.nextTracer = 0;
+
     people.forEach((person, i) => {
       const { scene: body, clips } = kinds[person.kind];
       const model = cloneSkinned(body);
@@ -229,7 +255,17 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
         home: person.home ? new THREE.Vector3(person.home[0], 0, person.home[1]) : null,
         target: new THREE.Vector3(), pace: 0, strikeTime: 0, struck: false, still: false,
       };
+      if (person.gang) {
+        const gang = GANGS[person.gang];
+        npc.gang = person.gang;
+        npc.post = new THREE.Vector3(person.post[0], 0, person.post[1]);
+        npc.postFacing = gang.front > 0 ? 0 : Math.PI;
+        npc.crew = (crews[person.gang] ??= { name: gang.name, alert: 0 });
+        npc.flash = addGangGear(model, gang.colour);
+        npc.shootTimer = 1 + Math.random();
+      }
       place(npc, new THREE.Vector3(person.home?.[0] ?? 0, 0, person.home?.[1] ?? 0));
+      if (npc.post) npc.group.rotation.y = npc.postFacing;
       if (i === 0 && testSpot) {
         npc.group.position.copy(testSpot);
         npc.group.rotation.y = 0;
@@ -304,6 +340,78 @@ function poseStrike(npc, playerPosition, t) {
 }
 
 // onStrike(kind, npc) is called at the moment a slap or punch lands on the player.
+// What a gang member wears and carries: a black balaclava with two holes cut
+// for the eyes, a scarf in the gang's colour, and a pistol in the right hand.
+// Returns the muzzle flash, so it can be lit when he fires.
+let balaclavaKnit = null;
+function addGangGear(model, colour) {
+  if (!balaclavaKnit) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#131315';
+    ctx.fillRect(0, 0, 256, 128);
+    for (let y = 0; y < 128; y += 3) { ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(0, y, 256, 1); } // knitted ribs
+    ctx.globalCompositeOperation = 'destination-out'; // cut the eye holes right through
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.ellipse(64 + side * 11.5, 62, 8.5, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    balaclavaKnit = new THREE.CanvasTexture(canvas);
+    balaclavaKnit.colorSpace = THREE.SRGBColorSpace;
+  }
+  const wear = (bone, geometry, material, x, y, z) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    model.getObjectByName(bone)?.add(mesh);
+    return mesh;
+  };
+  const mask = wear('Head', new THREE.SphereGeometry(0.123, 24, 16), new THREE.MeshStandardMaterial({ map: balaclavaKnit, alphaTest: 0.5, roughness: 1, side: THREE.DoubleSide }), 0, 0.1, 0.006);
+  mask.scale.set(1, 1.2, 1.1);
+  wear('Head', new THREE.CylinderGeometry(0.088, 0.1, 0.07, 16), new THREE.MeshStandardMaterial({ color: colour, roughness: 0.9 }), 0, -0.04, 0.005); // scarf
+
+  const metal = new THREE.MeshStandardMaterial({ color: 0x17181a, roughness: 0.4, metalness: 0.6 });
+  wear('RightHand', new THREE.BoxGeometry(0.035, 0.2, 0.05), metal, 0, 0.14, 0.035);  // slide and barrel, pointing the way the hand points
+  wear('RightHand', new THREE.BoxGeometry(0.034, 0.06, 0.11), metal, 0, 0.07, -0.01);  // grip
+  const flash = wear('RightHand', new THREE.SphereGeometry(0.06, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffd98a }), 0, 0.28, 0.035);
+  flash.castShadow = false;
+  flash.visible = false;
+  return flash;
+}
+
+// A gang member fires at the player.
+function gangShot(npcs, npc, playerPosition, playerDistance, gangs) {
+  const hit = Math.random() < (playerDistance < 12 ? 0.55 : 0.3);
+  const miss = hit ? 0 : 1;
+  npc.arm[2].getWorldPosition(from);
+  to.set(playerPosition.x + (Math.random() - 0.5) * 3 * miss, playerPosition.y + 1.2 + Math.random() * 1.5 * miss, playerPosition.z + (Math.random() - 0.5) * 3 * miss);
+  const line = npcs.tracers[npcs.nextTracer++ % npcs.tracers.length];
+  const points = line.geometry.attributes.position;
+  points.setXYZ(0, from.x, from.y, from.z);
+  points.setXYZ(1, to.x, to.y, to.z);
+  points.needsUpdate = true;
+  line.material.opacity = 0.9;
+  npc.flash.visible = true;
+  npc.flashTime = 0.07;
+  sfx('shot');
+  gangs?.onShot?.(npc, hit);
+}
+
+// Hold the gun arm straight out at the player.
+function poseAim(npc, playerPosition) {
+  face.copy(playerPosition).setY(playerPosition.y + 1.3);
+  for (let i = 0; i < 2; i++) {
+    npc.arm[i].getWorldPosition(from);
+    npc.arm[i + 1].getWorldPosition(to);
+    limb.copy(to).sub(from).normalize();
+    reach.copy(face).sub(from).normalize();
+    turnBoneBy(npc.arm[i], swing.setFromUnitVectors(limb, reach));
+  }
+}
+
 // A police uniform, added to a copy of the man: peaked cap with a badge, a gold
 // badge on the chest, a shoulder radio, and a duty belt with a holster.
 function addUniform(model) {
@@ -332,7 +440,11 @@ function addUniform(model) {
 const OFFICER_RUN = 5.6, OFFICER_WALK = 1.5;
 
 // police: { wanted, canCatch, onArrest(officer) }. While `wanted` is true the officers run the player down.
-export function updateNpcs(npcs, playerPosition, dt, onStrike, police) {
+// gangs: { canTarget, onShot(npc, hit), onAlert(npc) }. Gang members shoot at the player when he
+// trespasses on their turf or attacks one of them.
+export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
+  for (const crew of Object.values(npcs.crews || {})) crew.alert = Math.max(0, crew.alert - dt);
+  for (const line of npcs.tracers || []) line.material.opacity = Math.max(0, line.material.opacity - dt * 7);
   for (const cop of npcs.officers || []) {
     const position = cop.group.position;
     let pace = 0, heading = cop.post.facing;
@@ -402,7 +514,42 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police) {
     let pace = 0;       // 0 standing, 1 walking, 2 running
     let heading = null; // the way they want to face
 
-    if (npc.state === 'idle') {
+    if (npc.gang) {
+      // Gang members guard their turf. Come too close, or hurt one, and the whole gang opens fire.
+      npc.flashTime = (npc.flashTime || 0) - dt;
+      if (npc.flashTime <= 0) npc.flash.visible = false;
+      const canTarget = gangs?.canTarget ?? true;
+      if (npc.crew.alert <= 0 && playerDistance < 9 && canTarget) {
+        npc.crew.alert = 20;
+        gangs?.onAlert?.(npc);
+      }
+      if (npc.crew.alert > 0 && canTarget) {
+        if (playerDistance < 32) npc.crew.alert = Math.max(npc.crew.alert, 12); // stays angry while he is near
+        heading = Math.atan2(toPlayerX, toPlayerZ);
+        if (playerDistance > 11 && playerDistance < 60) { // closes in to shooting range
+          position.x += toPlayerX / playerDistance * RUN_SPEED * 0.7 * dt;
+          position.z += toPlayerZ / playerDistance * RUN_SPEED * 0.7 * dt;
+          pace = 2;
+        }
+        npc.shootTimer -= dt;
+        if (npc.shootTimer <= 0 && playerDistance < 38) {
+          npc.shootTimer = 0.9 + Math.random() * 1.1;
+          gangShot(npcs, npc, playerPosition, playerDistance, gangs);
+        }
+        npc.aiming = true;
+      } else {
+        npc.aiming = false;
+        const dx = npc.post.x - position.x, dz = npc.post.z - position.z, distance = Math.hypot(dx, dz);
+        if (distance > 0.4) { // strolls back to his spot
+          position.x += dx / distance * WALK_SPEED * dt;
+          position.z += dz / distance * WALK_SPEED * dt;
+          heading = Math.atan2(dx, dz);
+          pace = 1;
+        } else {
+          heading = npc.postFacing;
+        }
+      }
+    } else if (npc.state === 'idle') {
       if (npc.timer <= 0 && !npc.still) wander(npc, 6, 18);
     } else if (npc.state === 'walk') {
       const dx = npc.target.x - position.x, dz = npc.target.z - position.z;
@@ -471,6 +618,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police) {
     npc.mixer.update(dt);
     for (const entry of npc.clean) entry.rotation.copy(entry.bone.quaternion);
     if (npc.state === 'strike') poseStrike(npc, playerPosition, Math.min(1, npc.strikeTime));
+    if (npc.gang && npc.aiming) poseAim(npc, playerPosition);
   }
 }
 
@@ -529,6 +677,7 @@ function makeDeathPose(npc) {
 // Make an NPC angry: they run at the player to hit him.
 export function provokeNpc(npc) {
   if (npc.state === 'dead' || npc.state === 'strike') return;
+  if (npc.gang) { npc.crew.alert = 25; return; } // hurt one and the whole gang turns on you
   npc.state = 'chase';
   npc.timer = 12; // seconds before they give up the chase
 }
@@ -541,7 +690,8 @@ export function hitNpc(npc, shooterPosition, damage = DAMAGE) {
     const position = npc.group.position;
     npc.state = 'dead';
     npc.fall = 0;
-    npc.timer = RESPAWN_TIME;
+    npc.timer = npc.gang ? GANG_RESPAWN : RESPAWN_TIME;
+    if (npc.gang) { npc.crew.alert = 25; npc.aiming = false; npc.flash.visible = false; }
     // Face the shooter, then fall a random way in a random heap.
     npc.group.rotation.y = Math.atan2(shooterPosition.x - position.x, shooterPosition.z - position.z);
     npc.fallWay = FALL_WAYS[(Math.random() * FALL_WAYS.length) | 0];

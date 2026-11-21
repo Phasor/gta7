@@ -26,6 +26,9 @@ export function pushOut(position, radius, canSwim = false) {
 
   // NPCs, animals and the truck stay out of the lake: anything of theirs that
   // strays past the bank is put back on it. The jetty is the exception.
+  // ...and out of the sea.
+  if (sea.active && !canSwim && position.x > sea.x - radius) position.x = sea.x - radius;
+
   if (water.active && !canSwim) {
     const dx = position.x - water.x, dz = position.z - water.z, dist = Math.hypot(dx, dz) || 1;
     if (dist < water.radius * 1.35) {
@@ -38,6 +41,9 @@ export function pushOut(position, radius, canSwim = false) {
     }
   }
 }
+
+// The sea, if there is one: everything beyond x is water. docks are piers you can walk out on.
+export const sea = { active: false, x: 0, docks: [] };
 
 // The lake, if there is one: its centre, rough radius, and the jetties you may walk out on.
 export const water = { active: false, x: 0, z: 0, radius: 0, docks: [] };
@@ -116,6 +122,10 @@ export function roomLimit(position, origin, direction, maxDistance) {
 
 // How deep the lake is at a spot: 0 on land or on a jetty, getting deeper away from the bank.
 export function waterDepthAt(position) {
+  if (sea.active && position.x > sea.x) { // the sea shelves gently away from the beach
+    if (sea.docks.some((d) => position.x > d.minX && position.x < d.maxX && position.z > d.minZ && position.z < d.maxZ)) return 0;
+    return Math.min(2, (position.x - sea.x) * 0.12);
+  }
   if (!water.active) return 0;
   const dx = position.x - water.x, dz = position.z - water.z, dist = Math.hypot(dx, dz);
   const bank = shoreRadius(Math.atan2(dz, dx));

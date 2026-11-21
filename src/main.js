@@ -11,6 +11,9 @@ import { createGasStation, updateGasStation } from './gasstation.js';
 import { createNeighbourhood } from './neighbourhood.js';
 import { createGunShop, updateGunShop } from './gunshop.js';
 import { createCity, updateCity } from './city.js';
+import { sfx, updateSound } from './sound.js';
+import { createSea, updateSea } from './sea.js';
+import { createTurfs, updateTurfs } from './gangs.js';
 import { createPoliceStation, updatePoliceStation } from './policestation.js';
 import { createGym, updateGym, stationNear, TRAINING } from './gym.js';
 import { createLake, updateLake, boatNear, landingSpot, SEAT } from './lake.js';
@@ -20,7 +23,7 @@ import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke } from './gun.js';
 import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, playStrike, debug as npcDebug } from './npc.js';
 
-const MAP_SIZE = 1900;    // playable area, metres along each side (big enough to reach the city)
+const MAP_SIZE = 2140;    // playable area, metres along each side (big enough to reach the city)
 const GROUND_SIZE = 2400; // the grass carries on past the edge so the horizon looks endless
 
 // --- Renderer ---------------------------------------------------------------
@@ -118,6 +121,12 @@ createNeighbourhood(scene);
 // Palm City: ten Miami-style buildings about half a minute's drive along the road.
 const city = createCity(scene, 640);
 
+// The sea and its beach, past the far end of the city.
+const seaParts = createSea(scene, 962, scene.fog, SUN_OFFSET);
+
+// The two gangs' corners: the Vipers on Palm Ave and the Sharks in Palm City.
+createTurfs(scene);
+
 // The gun shop, across the road from the petrol station.
 const gunShop = createGunShop(scene, 54, 11, 0);
 
@@ -175,9 +184,11 @@ function buy(kind) {
   if (owned.has(kind)) {
     toast(`You already own the ${item.name.toLowerCase()}. Press ${Object.keys(WEAPONS).indexOf(kind) + 1} any time to carry it.`);
   } else if (money < item.price) {
+    sfx('error');
     toast(`Not enough Gator Bucks: the ${item.name.toLowerCase()} costs G$ ${item.price.toLocaleString('en-US')}.`);
     return;
   } else {
+    sfx('buy');
     money -= item.price;
     owned.add(kind);
     toast(`You pay Big Al G$ ${item.price.toLocaleString('en-US')} and he hands you the ${item.name.toLowerCase()}.`);
@@ -228,7 +239,8 @@ function setMart(open) {
 function buyMart(index) {
   const item = MART[index];
   if (item.limit && bag[item.key] >= item.limit) return toast(`You already have a ${item.name.toLowerCase()}.`);
-  if (money < item.price) return toast(`Not enough Gator Bucks: that costs G$ ${item.price}.`);
+  if (money < item.price) return sfx('error'), toast(`Not enough Gator Bucks: that costs G$ ${item.price}.`);
+  sfx('buy');
   money -= item.price;
   bag[item.key] += item.amount;
   toast(`You pay G$ ${item.price} and the cashier hands you the ${item.name.toLowerCase()}.`);
@@ -254,6 +266,7 @@ function smoke() {
   if (!bag.cigarettes) return toast('You have no cigarettes. Sunny\'s Mart sells them.');
   if (!bag.lighter) return toast('You have cigarettes but nothing to light them with. Buy a lighter.');
   bag.cigarettes--;
+  sfx('lighter');
   smoking = 12; // three drags
   toast('You light a cigarette. *cough*' + unhealthy());
   showBag(); persist();
@@ -261,6 +274,7 @@ function smoke() {
 function drink() {
   if (!bag.beer) return toast('You have no beer. Sunny\'s Mart sells it.');
   bag.beer--;
+  sfx('drink');
   tipsy = Math.min(60, tipsy + 25);
   toast('You drink a beer. Everything goes a bit wobbly.');
   showBag(); persist();
@@ -268,6 +282,7 @@ function drink() {
 function eat() {
   if (!bag.snacks) return toast('You have no snacks. Sunny\'s Mart sells them.');
   bag.snacks--;
+  sfx('eat');
   energy = 30;
   player.boost = 1.35;
   toast('You eat the snacks. You feel quick on your feet!' + unhealthy());
@@ -301,6 +316,7 @@ function startWorkout(station) {
 }
 function finishWorkout() {
   const { station } = workout, t = TRAINING[station.kind];
+  sfx('levelup');
   stats[t.stat]++;
   toast(`${t.title} is now ${stats[t.stat]}/${MAX_STAT}: ${t.effect}.`);
   showStats();
@@ -320,6 +336,7 @@ function sellIguanas() {
   if (!bag.iguanas) return toast('You have no iguanas to sell. Shoot or punch some, then walk over them to pick them up.');
   const earned = bag.iguanas * IGUANA_PRICE;
   toast(`Big Al buys your ${bag.iguanas} iguana${bag.iguanas > 1 ? 's' : ''} for G$ ${earned}.`);
+  sfx('coin');
   money += earned;
   bag.iguanas = 0;
   showMoney(); showBag(); persist(); drawShop();
@@ -345,6 +362,7 @@ function updateDrops(dt, time) {
     drop.mesh.position.y = drop.height + Math.sin(time * 3 + i) * 0.06;
     const taken = !driving && !boating && near(drop.mesh.position.x, drop.mesh.position.z, 1.2);
     if (taken) {
+      sfx('coin');
       money += drop.amount;
       showMoney(); persist();
       toast(`You pick up G$ ${drop.amount}.`);
@@ -408,6 +426,7 @@ let sleeping = false;
 function trySleep() {
   if (sleeping) return;
   if (!isNight()) return toast('You are not tired yet. You can sleep once it gets dark, at 6 in the evening.');
+  sfx('sleep');
   sleeping = true;
   fadeEl.style.opacity = 1;
   setTimeout(() => {
@@ -461,6 +480,7 @@ function arrest() {
     showMoney();
     wanted = 0;
     arrests++;
+    sfx('cell');
     jailed = jailMinutes() * 60;
     arresting = false;
     player.group.position.copy(policeStation.userData.cell);
@@ -492,6 +512,45 @@ function updatePolice(dt) {
   wantedEl.style.display = wanted > 0 || jailed > 0 ? 'block' : 'none';
   wantedEl.textContent = jailed > 0 ? `IN THE CELLS · released in ${Math.floor(Math.ceil(jailed) / 60)}:${String(Math.ceil(jailed) % 60).padStart(2, '0')}` : 'WANTED';
 }
+// --- Health -------------------------------------------------------------------------------
+// Getting shot costs health. It comes back slowly if he stays out of trouble. At zero
+// he passes out and wakes up back on Palm Ave with a doctor's bill.
+let health = 100, lastHurtAt = -99, downed = false;
+const healthEl = overlay('left:18px;top:94px');
+function showHealth() {
+  healthEl.innerHTML = `<div style="width:170px;height:14px;background:rgba(0,0,0,0.55);border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,0.35)">
+    <div style="width:${health}%;height:100%;background:${health > 35 ? '#5fc46a' : '#e0452f'}"></div></div>`;
+}
+showHealth();
+function hurtPlayer(amount) {
+  if (downed || jailed > 0 || arresting) return;
+  health = Math.max(0, health - amount);
+  lastHurtAt = gameTime;
+  hurt = 1;
+  showHealth();
+  if (health > 0) return;
+  downed = true;
+  fadeEl.style.opacity = 1;
+  setTimeout(() => {
+    if (driving) { driving = false; setEngine(truck, false); truck.speed = 0; player.group.visible = true; }
+    if (boating) { setEngine(boating, false); boating.speed = 0; boating = null; }
+    const bill = Math.min(money, 100);
+    money -= bill;
+    showMoney();
+    health = 100;
+    showHealth();
+    downed = false;
+    player.group.position.set(0, 0, 0);
+    fadeEl.style.opacity = 0;
+    persist();
+    toast(`You were shot down. You wake up back on Palm Ave, G$ ${bill} poorer for the doctor.`);
+  }, 1300);
+}
+function healOverTime(dt) {
+  if (health >= 100 || downed || gameTime - lastHurtAt < 6) return;
+  health = Math.min(100, health + 4 * dt);
+  showHealth();
+}
 // Where he has to stand to use things.
 const near = (px, pz, reach) => Math.hypot(player.group.position.x - px, player.group.position.z - pz) < reach;
 const atCounter = () => near(54, 13.2, 3.2) && player.group.position.z > 6.3; // in front of Big Al
@@ -511,6 +570,7 @@ function useKey() {
     const wait = Math.ceil(wagesAt + WAGE_WAIT - gameTime);
     if (wait > 0) return toast(`Your next wages arrive in ${wait} seconds.`);
     wagesAt = gameTime;
+    sfx('coin');
     money += WAGES;
     showMoney();
     persist();
@@ -628,6 +688,13 @@ window.addEventListener('keydown', (e) => {
       if (owned.size) gun.equipped = !gun.equipped;
       else toast("You don't own a gun yet. Big Al's Guns is across the road from the petrol station.");
     }
+  }
+  if (e.code === 'KeyR' && !e.repeat) { // put the view back to normal
+    cam.pitch = 0.18;
+    cam.distance = 3.6;
+    tipsy = 0;
+    facingLocked = false;
+    toast('View reset.');
   }
   if (e.code === 'KeyV' && !e.repeat) { // lock or unlock which way he faces
     facingLocked = !facingLocked;
@@ -789,6 +856,7 @@ function step(dt) {
     nextHand = punchHand === 'left' ? 'right' : 'left';
     punchTime = punchTotal = PUNCHES[punchHand].time * (1 - 0.05 * stats.boxing); // Boxing: faster punches
     punchLanded = false;
+    sfx('whoosh');
     lastPunchAt = gameTime;
     guardTime = punchTotal + 1.1;
   }
@@ -817,8 +885,8 @@ function step(dt) {
       if (target) {
         const knockedOut = hitNpc(target, at, PUNCHES[punchHand].damage * (1 + 0.15 * stats.strength)); // Strength: harder punches
         playStrike('punch');
-        if (knockedOut) dropCash(target.group.position);
-        commitCrime();
+        if (knockedOut) dropCash(target.group.position, target.gang ? [10, 20, 50][Math.floor(Math.random() * 3)] : undefined);
+        if (!target.gang) commitCrime();
         if (testView.has('npc')) console.log(knockedOut ? 'TEST punch knocked out' : 'TEST punch landed on npc');
       }
     }
@@ -888,8 +956,8 @@ function step(dt) {
       // ?npc=kill makes the first hit count twice, to check the fall without waiting for a second shot.
       if (testView.get('npc') === 'kill') killed = hitNpc(struck.npc, player.group.position) || killed;
       hitFlash = 0.15;
-      if (killed) dropCash(struck.npc.group.position);
-      commitCrime();
+      if (killed) dropCash(struck.npc.group.position, struck.npc.gang ? [10, 20, 50][Math.floor(Math.random() * 3)] : undefined);
+      if (!struck.npc.gang) commitCrime(); // the police don't mind what happens to gang members
       if (testView.has('npc')) console.log(killed ? 'TEST npc killed' : 'TEST npc hit');
     }
   }
@@ -958,6 +1026,7 @@ function step(dt) {
     for (const iguana of iguanas) {
       if (iguana.state !== 'dead' || !near(iguana.group.position.x, iguana.group.position.z, 1.1)) continue;
       collectIguana(iguana);
+      sfx('pickup');
       bag.iguanas++;
       showBag(); persist();
       toast(`You pick up the iguana. You are carrying ${bag.iguanas}. Big Al pays G$ ${IGUANA_PRICE} each.`);
@@ -974,6 +1043,7 @@ function step(dt) {
   const inWater = !boating && !driving && waterDepthAt(player.group.position) > 0.3;
   updateAlligators(alligators, player.group.position, dt, time, inWater && caught <= 0, () => {
     hurt = 1;
+    sfx('growl');
     caught = 2.2;
     notice.style.display = 'block';
   });
@@ -988,6 +1058,9 @@ function step(dt) {
   updateGasStation(gasStation, player.group.position, dt);
   updateGunShop(gunShop, player.group.position, dt);
   updateCity(city, player.group.position, dt);
+  updateSea(seaParts, time);
+  updateTurfs(time);
+  healOverTime(dt);
   updatePoliceStation(policeStation, player.group.position, dt);
   updateGym(gym, player.group.position, dt, time);
   const byTruck = !driving && Math.hypot(player.group.position.x - truck.group.position.x, player.group.position.z - truck.group.position.z) < 3.4;
@@ -1061,6 +1134,10 @@ function step(dt) {
     wanted: wanted > 0 && !arresting,
     canCatch: !boating && (!driving || Math.abs(truck.speed) < 3), // a moving truck or a boat can't be stopped on foot
     onArrest: arrest,
+  }, {
+    canTarget: !downed && jailed <= 0 && !arresting,
+    onShot: (npc, hit) => { if (hit) hurtPlayer(driving ? 6 : 12); },   // the truck's bodywork takes half of it
+    onAlert: (npc) => toast(`The ${npc.crew.name} open fire! Get off their turf.`),
   });
   updateCamera();
   if (tipsy > 0) camera.rotateZ(Math.sin(time * 1.3) * 0.07 * Math.min(1, tipsy / 5)); // wobbly after a beer
@@ -1072,6 +1149,20 @@ function step(dt) {
   sky.position.copy(camera.position); // the sky is always centred on the viewer
   sky.material.uniforms.time.value = time;
   updateDaylight(dt);
+  const here = player.group.position;
+  updateSound(dt, {
+    position: here,
+    onFoot: !driving && !boating && player.downTime < 0 && jailed <= 0,
+    onGround: player.onGround,
+    swimming: (player.swim || 0) > 0.5,
+    wading: inWater,
+    indoors: ceilingAt(here) < Infinity,
+    hardFloor: ceilingAt(here) < Infinity || (here.z > -9.2 && here.z < 0.2) || here.x > 600, // indoors, on the street, or in the city
+    night: isNight(),
+    wanted: wanted > 0,
+    doors: [house.userData.open, house.userData.garageOpen, house.userData.fridgeAmount, store.userData.open, gasStation.userData.open,
+      gunShop.userData.open, gym.open, policeStation.userData.open, ...city.doors.map((door) => door.open)],
+  });
   vintage.uniforms.time.value = time;
 
 }
