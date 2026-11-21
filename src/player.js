@@ -226,7 +226,7 @@ export function createPlayer() {
       shinL: bone('LeftLeg'), shinR: bone('RightLeg'),
       footL: bone('LeftFoot'), footR: bone('RightFoot'),
       armR: bone('RightArm'), foreArmR: bone('RightForeArm'), handR: bone('RightHand'),
-      armL: bone('LeftArm'), spine1: bone('Spine1'), spine2: bone('Spine2'),
+      armL: bone('LeftArm'), foreArmL: bone('LeftForeArm'), handL: bone('LeftHand'), spine1: bone('Spine1'), spine2: bone('Spine2'),
       head: bone('Head'),
     };
 
@@ -243,7 +243,11 @@ export function createPlayer() {
     // Measure how high the ankles sit above the ground when standing.
     player.mixer.update(0);
     const b = player.bones;
-    player.cleanPose = [b.spine, b.thighL, b.thighR, b.shinL, b.shinR, b.footL, b.footR, b.armR, b.foreArmR, b.head, b.armL, b.spine1, b.spine2]
+    // Finger bones, for making fists: four fingers of three joints on each hand.
+    const fingersOf = (hand) => ['Index', 'Middle', 'Ring', 'Pinky'].map((finger) => [1, 2, 3].map((joint) => bone(`${hand}Hand${finger}${joint}`)).filter(Boolean));
+    player.fingersL = fingersOf('Left');
+    player.fingersR = fingersOf('Right');
+    player.cleanPose = [...player.fingersL.flat(), ...player.fingersR.flat(), b.spine, b.thighL, b.thighR, b.shinL, b.shinR, b.footL, b.footR, b.armR, b.foreArmR, b.head, b.armL, b.foreArmL, b.spine1, b.spine2]
       .map((part) => ({ bone: part, rotation: part.quaternion.clone() }));
     player.cleanHips.copy(b.hips.position);
     group.updateWorldMatrix(true, true);
@@ -273,6 +277,17 @@ export function turnBoneBy(bone, turn) {
 }
 
 const NO_TURN = new THREE.Quaternion();
+const fistTarget = new THREE.Vector3();
+const FIST_CURL = 1.25 * (Number(new URLSearchParams(location.search).get('curl')) || 1); // how far each finger joint bends in a fist
+
+// Swing a limb section (from `bone` to `child`) toward a direction, by `weight` (0 = leave it, 1 = all the way).
+function pointLimb(bone, child, direction, weight) {
+  bone.getWorldPosition(shoulderSpot);
+  child.getWorldPosition(jointSpot);
+  limbDirection.copy(jointSpot).sub(shoulderSpot).normalize();
+  aimTurn.setFromUnitVectors(limbDirection, direction);
+  turnBoneBy(bone, aimTurn.slerpQuaternions(NO_TURN, aimTurn.clone(), weight));
+}
 const aimTurn = new THREE.Quaternion();
 const shoulderSpot = new THREE.Vector3(), jointSpot = new THREE.Vector3();
 const limbDirection = new THREE.Vector3(), aimDirection = new THREE.Vector3();
@@ -290,7 +305,8 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
     if (player.freezeDown !== undefined) player.downTime = Math.min(player.downTime, player.freezeDown); // test switch
     const step = THREE.MathUtils.smoothstep;
     const falling = Math.min(1, player.downTime / KNOCK.fall) ** 2;
-    const up = player.downTime - KNOCK.fall - KNOCK.lie; // seconds into getting up
+    const up = player.downTime - KNOCK.fall - KNOCK.lie * (player.lieScale ?? 1); // lieScale: tougher people get up sooner
+    void 0; // seconds into getting up
     player.down = up < 0 ? falling : 1 - step(up, 0.45, 0.95);
     sprawl = up < 0 ? falling : 1 - step(up, 0, 0.3);
     sit = step(up, 0, 0.5) * (1 - step(up, 0.5, 0.95));
@@ -299,7 +315,7 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
     if (up >= KNOCK.rise) player.downTime = -1;
     input = { ...input, x: 0, z: 0, sprint: false, jump: false, crouch: false, aim: false };
   } else {
-    player.down = 0;
+    player.down = input.lie ? 1 : 0; // lying on a gym bench
   }
   group.rotation.x = -Math.PI / 2 * player.down;
   if (group.children[0]) group.children[0].position.z = 0.12 * player.down; // rest on the ground, not in it
@@ -321,14 +337,17 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
 
   if (moving) {
     dx /= len; dz /= len;
-    group.position.x += dx * speed * dt;
-    group.position.z += dz * speed * dt;
+    group.position.x += dx * speed * (player.boost || 1) * dt; // boost: a burst of energy after a snack
+    group.position.z += dz * speed * (player.boost || 1) * dt;
   }
 
   // Turn to face the way we're walking (or, when aiming, the way the camera
   // looks), taking the short way round.
-  if (moving || input.aim) {
-    const target = input.aim ? Math.atan2(fx, fz) : Math.atan2(dx, dz);
+  // Aiming a gun always faces where the camera looks. Otherwise he turns to face the way he
+  // walks or punches, unless his facing is locked (so you can watch him from the front).
+  const squareUp = input.aim || (input.punch > 0 && !input.lockFacing);
+  if (input.aim || ((moving || squareUp) && !input.lockFacing)) {
+    const target = squareUp ? Math.atan2(fx, fz) : Math.atan2(dx, dz);
     let diff = target - group.rotation.y;
     diff = Math.atan2(Math.sin(diff), Math.cos(diff));
     group.rotation.y += diff * Math.min(1, TURN_RATE * dt);
@@ -481,6 +500,52 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
       aimTurn.setFromUnitVectors(limbDirection, aimDirection);
       turnBoneBy(upper, aimTurn.slerpQuaternions(NO_TURN, aimTurn.clone(), player.aim));
     }
+  }
+
+  // Fighting. He brings both fists up into a boxer's guard, then throws either a
+  // quick left jab or a hard right punch that he twists his whole body into.
+  // input.fight = { guard, left, right }, each from 0 to 1.
+  if (input.fight) {
+    const { guard, left, right } = input.fight;
+    turnBone(b.spine, forwards.set(0, 1, 0), 0.55 * right - 0.2 * left); // shoulders turn into the punch
+    sideways.set(1, 0, 0).applyQuaternion(group.quaternion);
+    turnBone(b.spine, sideways, 0.1 * guard + 0.12 * right);             // hunched forward a little
+    for (const [upper, fore, hand, side, hit, fingers] of [
+      [b.armL, b.foreArmL, b.handL, 1, left, player.fingersL], [b.armR, b.foreArmR, b.handR, -1, right, player.fingersR]]) {
+      // Guard: elbow down by the ribs, fist up by the chin. Punch: the whole arm straight out in front.
+      aimDirection.set(side * 0.3, -0.8, 0.5).lerp(fistTarget.set(-side * 0.12, 0.12, 1), hit).normalize().applyQuaternion(group.quaternion);
+      pointLimb(upper, fore, aimDirection, guard);
+      aimDirection.set(-side * 0.38, 0.8, 0.45).lerp(fistTarget.set(-side * 0.12, 0.12, 1), hit).normalize().applyQuaternion(group.quaternion);
+      pointLimb(fore, hand, aimDirection, guard);
+      // Make a fist: every finger joint curls round the line of the knuckles.
+      fingers[0][0].getWorldPosition(shoulderSpot);
+      fingers[3][0].getWorldPosition(jointSpot);
+      limbDirection.copy(jointSpot).sub(shoulderSpot).normalize();
+      for (const finger of fingers) for (const joint of finger) turnBone(joint, limbDirection, side * FIST_CURL * guard);
+    }
+  }
+  // Smoking: his left hand lifts the cigarette to his mouth for a drag, then drops again.
+  player.smokeLift = (player.smokeLift || 0) + ((input.smoke ? 1 : 0) - (player.smokeLift || 0)) * Math.min(1, 5 * dt);
+  if (player.smokeLift > 0.01) {
+    const s = player.smokeLift;
+    // Point the upper arm forward and a little down, then fold the forearm so the
+    // hand ends up just in front of his mouth.
+    b.armL.getWorldPosition(shoulderSpot);
+    b.foreArmL.getWorldPosition(jointSpot);
+    limbDirection.copy(jointSpot).sub(shoulderSpot).normalize();
+    const inward = Math.sign(group.worldToLocal(shoulderSpot.clone()).x) * -1; // toward the middle of his body
+    aimDirection.set(0.05 * inward, -0.45, 0.9).normalize().applyQuaternion(group.quaternion);
+    aimTurn.setFromUnitVectors(limbDirection, aimDirection);
+    turnBoneBy(b.armL, aimTurn.slerpQuaternions(NO_TURN, aimTurn.clone(), s));
+
+    b.foreArmL.getWorldPosition(shoulderSpot);  // the elbow, now it has moved
+    b.handL.getWorldPosition(jointSpot);
+    limbDirection.copy(jointSpot).sub(shoulderSpot).normalize();
+    b.head.getWorldPosition(aimDirection);       // his mouth: a little above and in front of the base of the head
+    aimDirection.y -= 0.05;
+    aimDirection.add(forwards.set(0, 0, 0.14).applyQuaternion(group.quaternion)).sub(shoulderSpot).normalize();
+    aimTurn.setFromUnitVectors(limbDirection, aimDirection);
+    turnBoneBy(b.foreArmL, aimTurn.slerpQuaternions(NO_TURN, aimTurn.clone(), s));
   }
 
   // Slapped: his head snaps round to the side, then eases back.

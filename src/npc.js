@@ -207,7 +207,7 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots) {
 
 // A slap is a very short burst of bright noise; a punch is a duller, heavier thud.
 let audio = null;
-function playStrike(kind) {
+export function playStrike(kind) {
   try {
     audio ??= new AudioContext();
     const punch = kind === 'punch';
@@ -435,9 +435,9 @@ export function provokeNpc(npc) {
 }
 
 // A bullet fired from `shooterPosition` has hit this NPC. Returns true if it killed them.
-export function hitNpc(npc, shooterPosition) {
+export function hitNpc(npc, shooterPosition, damage = DAMAGE) {
   if (npc.state === 'dead') return false;
-  npc.health -= DAMAGE;
+  npc.health -= damage;
   if (npc.health <= 0) {
     const position = npc.group.position;
     npc.state = 'dead';

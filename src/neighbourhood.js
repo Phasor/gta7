@@ -264,7 +264,7 @@ export function createNeighbourhood(scene) {
       door: 0xe0a030, shutters: 0xf4efe3, chimney: redBrick, driveDir: -1 },
     { side: 'far', x: 28, w: 12, d: 9, storeys: 2, wall: stucco('#f3f1ec'), roof: { kind: 'flat', material: flat(0x55585c, 0.9), rise: 0 },
       garage: { width: 6, dir: 1 }, door: 0x202326, trim: 0x2c2f33, bigWindows: true, porch: 'none', doorX: -3 },
-    { side: 'far', x: 54, w: 10, d: 8, storeys: 2, wall: siding('#8fa3b3', 2), roof: { kind: 'gable', material: shingles('#33363b'), rise: 2.6 },
+    { side: 'far', x: 102, w: 10, d: 8, storeys: 2, wall: siding('#8fa3b3', 2), roof: { kind: 'gable', material: shingles('#33363b'), rise: 2.6 },
       garage: { width: 4, dir: -1 }, door: 0xf4efe3, shutters: 0x24303c, doorX: 1.2 },
     { side: 'far', x: 76, w: 13, d: 8, wall: stucco('#f0b8b0'), roof: { kind: 'hip', material: tiles('#a84a30'), rise: 1.8 },
       garage: { width: 6, dir: 1 }, door: 0x3d6f73, shutters: 0xf4efe3, doorX: -2, palm: [-5, 9, 6.8, 0.9] },

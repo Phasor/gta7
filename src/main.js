@@ -9,12 +9,14 @@ import { createStore, updateStore } from './store.js';
 import { createRoad } from './road.js';
 import { createGasStation, updateGasStation } from './gasstation.js';
 import { createNeighbourhood } from './neighbourhood.js';
+import { createGunShop, updateGunShop } from './gunshop.js';
+import { createGym, updateGym, stationNear, TRAINING } from './gym.js';
 import { createLake, updateLake, boatNear, landingSpot, SEAT } from './lake.js';
 import { createAlligators, updateAlligators } from './alligator.js';
 import { createTruck, updateTruck, setEngine } from './truck.js';
 import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt } from './world.js';
-import { createGun, updateGun, fireGun, createDisplayGun } from './gun.js';
-import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, debug as npcDebug } from './npc.js';
+import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke } from './gun.js';
+import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, playStrike, debug as npcDebug } from './npc.js';
 
 const MAP_SIZE = 600;     // playable area, metres along each side
 const GROUND_SIZE = 2400; // the grass carries on past the edge so the horizon looks endless
@@ -110,6 +112,218 @@ const gasStation = createGasStation(scene, 54, -19);
 // Ten more houses along the street, all different.
 createNeighbourhood(scene);
 
+// The gun shop, across the road from the petrol station.
+const gunShop = createGunShop(scene, 54, 11, 0);
+
+// --- Money and shopping ---------------------------------------------------------
+// The money is called Gator Bucks (G$). He starts with some, earns wages from the
+// cash machine in Sunny's Mart, and spends it at Big Al's. Progress is remembered.
+const WEAPONS = {
+  pistol: { name: 'Handgun', price: 400, blurb: 'Three shots to drop someone' },
+  shotgun: { name: 'Pump shotgun', price: 900, blurb: 'One shot, but only up close' },
+  rifle: { name: 'Hunting rifle', price: 1200, blurb: 'One shot at any distance, slow to fire' },
+};
+const saved = (() => { try { return JSON.parse(localStorage.getItem('gta7-save')) || {}; } catch { return {}; } })();
+let money = saved.money ?? 1500;
+const owned = new Set(saved.owned || []);
+if (new URLSearchParams(location.search).has('gun')) owned.add('pistol'); // test views start armed
+const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, owned: [...owned], weapon: gun.kind, bag, stats })); } catch { /* no storage */ } };
+
+const overlay = (css) => { const el = document.createElement('div'); el.style.cssText = `position:fixed;pointer-events:none;font-family:system-ui,sans-serif;${css}`; document.body.appendChild(el); return el; };
+const moneyEl = overlay('right:18px;top:14px;font-weight:bold;font-size:24px;color:#d8f0c0;background:rgba(30,45,25,0.7);padding:6px 14px;border-radius:8px');
+const toastEl = overlay('display:none;left:50%;top:14%;transform:translateX(-50%);font-size:18px;color:#f3e9d2;background:rgba(40,30,20,0.85);padding:10px 18px;border-radius:8px;max-width:80%;text-align:center');
+const shopEl = overlay('display:none;left:50%;top:50%;transform:translate(-50%,-50%);font-size:17px;color:#f3e9d2;background:rgba(28,34,22,0.94);padding:18px 26px;border-radius:12px;border:2px solid #f3e6c0;min-width:420px');
+const showMoney = () => (moneyEl.textContent = `G$ ${money.toLocaleString('en-US')}`);
+showMoney();
+let toastTimer = 0;
+function toast(text) {
+  toastEl.textContent = text;
+  toastEl.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (toastEl.style.display = 'none'), 4000);
+}
+
+let shopOpen = false;
+function drawShop() {
+  const rows = Object.entries(WEAPONS).map(([kind, item], i) =>
+    `<div style="display:flex;gap:14px;padding:7px 0;border-top:1px solid rgba(243,230,192,0.25)">
+       <b style="width:26px">${i + 1}</b><span style="flex:1"><b>${item.name}</b><br><small>${item.blurb}</small></span>
+       <b>${owned.has(kind) ? 'OWNED' : `G$ ${item.price.toLocaleString('en-US')}`}</b></div>`).join('');
+  shopEl.innerHTML = `<div style="font-size:22px;font-weight:bold;margin-bottom:4px">Big Al's Guns</div>
+    <div style="margin-bottom:10px">"What'll it be?" &nbsp;·&nbsp; You have <b>G$ ${money.toLocaleString('en-US')}</b></div>${rows}
+    <div style="margin-top:12px;opacity:0.8">Press 1, 2 or 3 to buy &nbsp;·&nbsp; E to leave</div>`;
+}
+function setShop(open) {
+  shopOpen = open;
+  shopEl.style.display = open ? 'block' : 'none';
+  if (open) drawShop();
+}
+function buy(kind) {
+  const item = WEAPONS[kind];
+  if (owned.has(kind)) {
+    toast(`You already own the ${item.name.toLowerCase()}. Press ${Object.keys(WEAPONS).indexOf(kind) + 1} any time to carry it.`);
+  } else if (money < item.price) {
+    toast(`Not enough Gator Bucks: the ${item.name.toLowerCase()} costs G$ ${item.price.toLocaleString('en-US')}.`);
+    return;
+  } else {
+    money -= item.price;
+    owned.add(kind);
+    toast(`You pay Big Al G$ ${item.price.toLocaleString('en-US')} and he hands you the ${item.name.toLowerCase()}.`);
+  }
+  setWeapon(gun, kind);
+  gun.equipped = true;
+  showMoney();
+  persist();
+  drawShop();
+}
+
+// --- Sunny's Mart: lighters, cigarettes, beer and snacks ---
+const MART = [
+  { key: 'lighter', name: 'Lighter', price: 3, amount: 1, limit: 1, blurb: 'You need one to light a cigarette' },
+  { key: 'cigarettes', name: 'Pack of cigarettes', price: 12, amount: 20, blurb: '20 in a pack. Press 4 to smoke one' },
+  { key: 'beer', name: 'Can of beer', price: 4, amount: 1, blurb: 'Press 5 to drink one. Makes you wobbly' },
+  { key: 'snacks', name: 'Bag of snacks', price: 2, amount: 1, blurb: 'Press 6 to eat one. Run faster for 30 seconds' },
+];
+const bag = Object.assign({ lighter: 0, cigarettes: 0, beer: 0, snacks: 0 }, saved.bag);
+const bagEl = overlay('right:18px;top:58px;font-size:15px;color:#f3e9d2;background:rgba(40,30,20,0.65);padding:5px 12px;border-radius:8px');
+function showBag() {
+  const parts = [];
+  if (bag.lighter) parts.push('Lighter');
+  if (bag.cigarettes) parts.push(`${bag.cigarettes} cigarette${bag.cigarettes > 1 ? 's' : ''}`);
+  if (bag.beer) parts.push(`${bag.beer} beer${bag.beer > 1 ? 's' : ''}`);
+  if (bag.snacks) parts.push(`${bag.snacks} snack${bag.snacks > 1 ? 's' : ''}`);
+  bagEl.textContent = parts.join(' · ');
+  bagEl.style.display = parts.length ? 'block' : 'none';
+}
+showBag();
+
+let martOpen = false;
+function drawMart() {
+  const rows = MART.map((item, i) =>
+    `<div style="display:flex;gap:14px;padding:7px 0;border-top:1px solid rgba(243,230,192,0.25)">
+       <b style="width:26px">${i + 1}</b><span style="flex:1"><b>${item.name}</b><br><small>${item.blurb}</small></span>
+       <b>${item.limit && bag[item.key] >= item.limit ? 'GOT ONE' : `G$ ${item.price}`}</b></div>`).join('');
+  shopEl.innerHTML = `<div style="font-size:22px;font-weight:bold;margin-bottom:4px">Sunny's Mart</div>
+    <div style="margin-bottom:10px">"Anything else?" &nbsp;·&nbsp; You have <b>G$ ${money.toLocaleString('en-US')}</b></div>${rows}
+    <div style="margin-top:12px;opacity:0.8">Press 1 to 4 to buy &nbsp;·&nbsp; E to leave</div>`;
+}
+function setMart(open) {
+  martOpen = open;
+  shopEl.style.display = open ? 'block' : 'none';
+  if (open) drawMart();
+}
+function buyMart(index) {
+  const item = MART[index];
+  if (item.limit && bag[item.key] >= item.limit) return toast(`You already have a ${item.name.toLowerCase()}.`);
+  if (money < item.price) return toast(`Not enough Gator Bucks: that costs G$ ${item.price}.`);
+  money -= item.price;
+  bag[item.key] += item.amount;
+  toast(`You pay G$ ${item.price} and the cashier hands you the ${item.name.toLowerCase()}.`);
+  showMoney(); showBag(); persist(); drawMart();
+}
+
+// Using what he bought.
+let smoking = 0, tipsy = 0, energy = 0;
+let smokeDrag = false; // true while the cigarette is at his mouth
+const puffSpot = new THREE.Vector3();
+// The cigarette in his left hand: white paper, a tan filter and a glowing end.
+const cigarette = new THREE.Group();
+for (const [colour, length, at, glow] of [[0xf4f1e8, 0.05, 0, false], [0xc98a4a, 0.02, -0.035, false], [0xff5a1e, 0.006, 0.028, true]]) {
+  const piece = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, length * 1.3, 8),
+    glow ? new THREE.MeshBasicMaterial({ color: colour }) : new THREE.MeshStandardMaterial({ color: colour, roughness: 0.9 }));
+  piece.rotation.x = Math.PI / 2;
+  piece.position.z = at;
+  cigarette.add(piece);
+}
+cigarette.visible = false;
+scene.add(cigarette);
+function smoke() {
+  if (!bag.cigarettes) return toast('You have no cigarettes. Sunny\'s Mart sells them.');
+  if (!bag.lighter) return toast('You have cigarettes but nothing to light them with. Buy a lighter.');
+  bag.cigarettes--;
+  smoking = 12; // three drags
+  toast('You light a cigarette. *cough*');
+  showBag(); persist();
+}
+function drink() {
+  if (!bag.beer) return toast('You have no beer. Sunny\'s Mart sells it.');
+  bag.beer--;
+  tipsy = Math.min(60, tipsy + 25);
+  toast('You drink a beer. Everything goes a bit wobbly.');
+  showBag(); persist();
+}
+function eat() {
+  if (!bag.snacks) return toast('You have no snacks. Sunny\'s Mart sells them.');
+  bag.snacks--;
+  energy = 30;
+  player.boost = 1.35;
+  toast('You eat the snacks. You feel quick on your feet!');
+  showBag(); persist();
+}
+const atMartCounter = () => near(22.7, -22.2, 1.7); // in front of the cashier in Sunny's Mart
+
+// --- The gym and training -----------------------------------------------------------
+// Iron Gator Gym is on the near side of the road, just past the petrol station.
+// Each piece of equipment raises one stat (up to 10), and the stats change the game:
+//   Boxing: punches are faster.  Strength: punches hit harder.  Toughness: he gets up sooner.
+const gym = createGym(scene, 73, -20, -9);
+const MAX_STAT = 10, WORKOUT_TIME = 5;
+const stats = Object.assign({ boxing: 0, strength: 0, toughness: 0 }, saved.stats);
+const statsEl = overlay('right:18px;top:92px;font-size:14px;color:#ffd9b0;background:rgba(40,30,20,0.65);padding:5px 12px;border-radius:8px');
+function showStats() {
+  statsEl.textContent = `Boxing ${stats.boxing} · Strength ${stats.strength} · Toughness ${stats.toughness}`;
+  statsEl.style.display = stats.boxing + stats.strength + stats.toughness ? 'block' : 'none';
+}
+showStats();
+const gymPrompt = (station) => {
+  const t = TRAINING[station.kind], level = stats[t.stat];
+  return level >= MAX_STAT ? `${t.title} is at its maximum (${MAX_STAT}/${MAX_STAT})`
+    : `Press E to train on ${t.thing} · ${t.title} ${level}/${MAX_STAT}: ${t.effect}`;
+};
+let workout = null; // { station, time } while he is training
+function startWorkout(station) {
+  if (stats[TRAINING[station.kind].stat] >= MAX_STAT) return toast(gymPrompt(station));
+  workout = { station, time: 0 };
+  gun.equipped = false;
+}
+function finishWorkout() {
+  const { station } = workout, t = TRAINING[station.kind];
+  stats[t.stat]++;
+  toast(`${t.title} is now ${stats[t.stat]}/${MAX_STAT}: ${t.effect}.`);
+  showStats();
+  persist();
+  // Put the equipment back and stand him beside it.
+  if (station.kind === 'bench') station.barbell.position.copy(station.barbell.userData.rest).sub(gym.group.position);
+  if (station.kind === 'weights') for (const dumbbell of station.dumbbells) { dumbbell.position.copy(dumbbell.userData.rest).sub(gym.group.position); dumbbell.rotation.set(0, 0, 0); }
+  player.group.position.set(station.spot.x, 0, station.spot.z);
+  workout = null;
+}
+// Where he has to stand to use things.
+const near = (px, pz, reach) => Math.hypot(player.group.position.x - px, player.group.position.z - pz) < reach;
+const atCounter = () => near(54, 13.2, 3.2) && player.group.position.z > 6.3; // in front of Big Al
+const atCashMachine = () => near(27.1, -21.25, 1.5);                         // the ATM in Sunny's Mart
+const WAGES = 250, WAGE_WAIT = 60;
+let wagesAt = -WAGE_WAIT;
+function useKey() {
+  if (workout) return;
+  const station = !driving && !boating ? stationNear(gym, player.group.position) : null;
+  if (station) return startWorkout(station);
+  if (martOpen) return setMart(false);
+  if (atMartCounter()) return setMart(true);
+  if (shopOpen) return setShop(false);
+  if (atCounter()) return setShop(true);
+  if (atCashMachine()) {
+    const wait = Math.ceil(wagesAt + WAGE_WAIT - gameTime);
+    if (wait > 0) return toast(`Your next wages arrive in ${wait} seconds.`);
+    wagesAt = gameTime;
+    money += WAGES;
+    showMoney();
+    persist();
+    return toast(`You withdraw your wages: G$ ${WAGES}.`);
+  }
+  toggleFridge(house, player.group.position);
+}
+
 // The lake, at the left-hand end of the street, with boats to take out.
 const lake = createLake(scene, -178, -98, 76, scene.fog, SUN_OFFSET, -9);
 let boating = null; // the boat the player is in, if any
@@ -187,18 +401,43 @@ const player = createPlayer();
 scene.add(player.group);
 
 const gun = createGun(scene, renderer);
+// Start with the gun he was carrying last time, if he owns one.
+setWeapon(gun, owned.size ? (saved.weapon && owned.has(saved.weapon) ? saved.weapon : [...owned][0]) : 'pistol');
 const crosshair = document.getElementById('crosshair');
 let aimHeld = false;   // right mouse button is down
 let aimTimer = 0;      // keeps the arm up for a moment after a shot
 let shotQueued = false;
+let facingLocked = false; // V: he stops turning, so the camera can stay on his face
+// Punches alternate: a quick left jab, then a hard right. Each has a duration (seconds) and a damage (out of 100).
+const PUNCHES = { left: { time: 0.19, damage: 20 }, right: { time: 0.32, damage: 50 } };
+let punchQueued = false, punchTime = 0, punchTotal = 1, punchLanded = false;
+let punchHand = 'left', nextHand = 'left', lastPunchAt = -9;
+let guardTime = 0, guardBlend = 0; // his fists stay up for a moment after a punch
 
 // --- Input ------------------------------------------------------------------
 const keys = new Set();
 window.addEventListener('keydown', (e) => {
   keys.add(e.code);
   if (e.code === 'Space') e.preventDefault(); // stop the page scrolling
-  if (e.code === 'KeyQ' && !e.repeat) gun.equipped = !gun.equipped; // draw or put away the gun
-  if (e.code === 'KeyE' && !e.repeat) toggleFridge(house, player.group.position); // open or shut the fridge
+  if (!e.repeat) {
+    const pick = { Digit1: 'pistol', Digit2: 'shotgun', Digit3: 'rifle' }[e.code];
+    const martPick = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
+    if (martOpen) { if (martPick >= 0) buyMart(martPick); }                 // buying at Sunny's Mart
+    else if (!shopOpen && e.code === 'Digit4') smoke();
+    else if (!shopOpen && e.code === 'Digit5') drink();
+    else if (!shopOpen && e.code === 'Digit6') eat();
+    else if (pick && shopOpen) buy(pick);                                       // buying at Big Al's counter
+    else if (pick && owned.has(pick)) { setWeapon(gun, pick); gun.equipped = true; } // switching between guns he owns
+    if (e.code === 'KeyQ') { // draw or put away the gun
+      if (owned.size) gun.equipped = !gun.equipped;
+      else toast("You don't own a gun yet. Big Al's Guns is across the road from the petrol station.");
+    }
+  }
+  if (e.code === 'KeyV' && !e.repeat) { // lock or unlock which way he faces
+    facingLocked = !facingLocked;
+    toast(facingLocked ? 'Facing locked: he keeps facing this way while you move and punch. Press V to unlock.' : 'Facing unlocked: he turns the way he moves again.');
+  }
+  if (e.code === 'KeyE' && !e.repeat) useKey(); // talk to Big Al, collect wages, or open the fridge
   if (e.code === 'KeyF' && !e.repeat) toggleDriving(); // get in or out of the truck
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -235,6 +474,8 @@ canvas.addEventListener('mousedown', (e) => {
   if (e.button === 2) aimHeld = true;
   // Left click shoots, but only once the mouse is captured (the first click captures it).
   if (e.button === 0 && gun.equipped && document.pointerLockElement === canvas) shotQueued = true;
+  // With no gun out, left click throws a punch.
+  if (e.button === 0 && !gun.equipped && document.pointerLockElement === canvas) punchQueued = true;
 });
 window.addEventListener('mouseup', (e) => {
   dragging = false;
@@ -297,7 +538,8 @@ const aimDir = new THREE.Vector3(), aimPoint = new THREE.Vector3();
 // (a woman, or a man with ?npc&man).
 const npcs = createNpcs(scene, MAP_SIZE / 2, testView.has('npc') ? new THREE.Vector3(0.75, 0, -5) : null, testView.has('man') ? 'man' : 'woman',
   [{ x: 20.65, z: -22.1, facing: Math.PI / 2 },   // the cashier behind the counter in Sunny's Mart
-   { x: 51.0, z: -26.6, facing: Math.PI / 2 }]);   // and the one in the Gator Gas kiosk
+   { x: 51.0, z: -26.6, facing: Math.PI / 2 },     // the one in the Gator Gas kiosk
+   gunShop.userData.cashier]);                       // and Big Al, behind the gun shop counter
 if (testView.has('npcpace')) npcDebug.pace = Number(testView.get('npcpace')); // hold NPCs in walk (1) or run (2)
 let hitFlash = 0; // the crosshair turns red for a moment when a shot hits someone
 
@@ -337,7 +579,70 @@ function step(dt) {
     sprint: keys.has('ShiftLeft') || keys.has('ShiftRight') || testView.has('run'),
     jump: keys.has('Space') || testView.has('jump'),
     crouch: keys.has('KeyC') || testView.has('crouch'),
+    smoke: smokeDrag,
+    lockFacing: facingLocked,
   };
+
+  // Punching. The fist lands part-way through the swing, on whoever is right in front of him.
+  if (testView.has('punch')) punchQueued = true;
+  if (punchQueued && punchTime <= 0 && !driving && !boating && player.downTime < 0 && !shopOpen && !martOpen) {
+    if (gameTime - lastPunchAt > 1.5) nextHand = 'left'; // a fresh flurry always opens with the jab
+    punchHand = testView.get('punch') || nextHand;        // (?punch=right holds one hand, for checking the pose)
+    nextHand = punchHand === 'left' ? 'right' : 'left';
+    punchTime = punchTotal = PUNCHES[punchHand].time * (1 - 0.05 * stats.boxing); // Boxing: faster punches
+    punchLanded = false;
+    lastPunchAt = gameTime;
+    guardTime = punchTotal + 1.1;
+  }
+  punchQueued = false;
+  guardTime -= dt;
+  guardBlend += ((guardTime > 0 ? 1 : 0) - guardBlend) * Math.min(1, 12 * dt);
+  const fight = { guard: guardBlend, left: 0, right: 0 };
+  if (guardBlend > 0.01) input.fight = fight;
+  if (punchTime > 0) {
+    punchTime -= dt;
+    const t = Math.min(1, 1 - punchTime / punchTotal);
+    fight[punchHand] = testView.has('hold') ? 1 : t < 0.35 ? t / 0.35 : 1 - (t - 0.35) / 0.65; // out fast, back slower
+    input.punch = testView.has('hold') ? 0 : 1; // he turns to face where the camera looks
+    if (!punchLanded && t > 0.35) {
+      punchLanded = true;
+      const at = player.group.position, facing = player.group.rotation.y;
+      let target = null, reach = 1.6;
+      for (const npc of npcs) {
+        if (npc.state === 'dead') continue;
+        const dx = npc.group.position.x - at.x, dz = npc.group.position.z - at.z, distance = Math.hypot(dx, dz);
+        if (distance < reach && (dx * Math.sin(facing) + dz * Math.cos(facing)) / distance > 0.4) { reach = distance; target = npc; }
+      }
+      if (target) {
+        const knockedOut = hitNpc(target, at, PUNCHES[punchHand].damage * (1 + 0.15 * stats.strength)); // Strength: harder punches
+        playStrike('punch');
+        if (testView.has('npc')) console.log(knockedOut ? 'TEST punch knocked out' : 'TEST punch landed on npc');
+      }
+    }
+  }
+
+  player.lieScale = 1 - 0.09 * stats.toughness; // Toughness: less time on the floor after a knock-down
+
+  // Training at the gym: he stays put at the equipment and works out for a few seconds.
+  if (testView.has('train') && !workout && player.bones) { // ?train=bag, weights or bench starts a workout straight away
+    workout = { station: gym.stations.find((s) => s.kind === testView.get('train')), time: 0 };
+  }
+  if (workout) {
+    const { station } = workout, t = workout.time += dt;
+    Object.assign(input, { x: 0, z: 0, sprint: false, jump: false, crouch: false, lockFacing: true });
+    player.group.rotation.y = station.kind === 'bench' ? 0 : station.facing;
+    if (station.kind === 'bag') {
+      punchQueued = true;            // a steady stream of jabs and rights
+      station.sway = 1;
+    } else if (station.kind === 'weights') {
+      input.fight = { guard: 0.5 - 0.5 * Math.cos(t * 4.2), left: 0, right: 0 };   // curls: fists up to the chin and down
+    } else {
+      input.lie = true;
+      const press = 0.5 - 0.5 * Math.cos(t * 3.4);                                 // the bar goes down to his chest and back up
+      input.fight = { guard: 1, left: press, right: press };
+    }
+    if (t >= WORKOUT_TIME && !testView.has('train')) finishWorkout();
+  }
 
   // Where the crosshair points: the spot the camera is looking at, on the
   // ground if it's looking down, otherwise far off in the distance.
@@ -367,8 +672,8 @@ function step(dt) {
   input.kick = gun.kick;
   if ((shotQueued || testView.has('fire')) && player.aim > 0.8 && fireGun(gun, aimPoint, hitsGround)) {
     shotQueued = false;
-    if (struck) {
-      let killed = hitNpc(struck.npc, player.group.position);
+    if (struck && struck.distance <= gun.range) {
+      let killed = hitNpc(struck.npc, player.group.position, gun.damage);
       // ?npc=kill makes the first hit count twice, to check the fall without waiting for a second shot.
       if (testView.get('npc') === 'kill') killed = hitNpc(struck.npc, player.group.position) || killed;
       hitFlash = 0.15;
@@ -449,17 +754,76 @@ function step(dt) {
   }
   updateStore(store, player.group.position, dt);
   updateGasStation(gasStation, player.group.position, dt);
+  updateGunShop(gunShop, player.group.position, dt);
+  updateGym(gym, player.group.position, dt, time);
   const byTruck = !driving && Math.hypot(player.group.position.x - truck.group.position.x, player.group.position.z - truck.group.position.z) < 3.4;
   const byFridge = !driving && !boating && nearFridge(house, player.group.position);
   const byBoat = !driving && !boating && !!boatNear(lake, player.group.position);
   if (boating) speedo.textContent += ` · throttle ${Math.round((boating.throttle || 0) * 100)}%`;
   const canLand = boating && Math.abs(boating.speed) < 4;
-  usePrompt.textContent = canLand ? 'Press F to get out' : byBoat ? 'Press F to take the boat out' : byTruck ? 'Press F to drive the truck' : 'Press E to open or close the fridge';
-  usePrompt.style.display = (byTruck && !boating) || byFridge || byBoat || canLand ? 'block' : 'none';
+  const byAl = !driving && !boating && atCounter(), byCash = !driving && !boating && atCashMachine();
+  if (shopOpen && !byAl) setShop(false); // walking away ends the conversation
+  const byMart = !driving && !boating && atMartCounter();
+  const gymSpot = !driving && !boating && !workout ? stationNear(gym, player.group.position) : null;
+  if (martOpen && !byMart) setMart(false);
+  if (testView.has('mart') && byMart && !martOpen) setMart(true); // ?mart opens the Sunny's Mart menu straight away
+
+  // Things he has used wear off.
+  // Smoking: every four seconds he lifts the cigarette to his mouth for a drag,
+  // then lowers it and breathes the smoke out. A thin wisp curls up from the tip.
+  if (testView.has('smoke')) smoking = 10.9; // ?smoke holds him mid-drag, to check the pose
+  cigarette.visible = smoking > 0 && !!player.bones && !driving && !boating;
+  if (smoking > 0) {
+    const wasDragging = smokeDrag;
+    smoking -= dt;
+    smokeDrag = smoking > 0 && smoking % 4 > 2.6;
+    if (cigarette.visible) {
+      const facing = player.group.rotation.y;
+      player.bones.handL.getWorldPosition(cigarette.position);
+      cigarette.position.x += Math.sin(facing) * 0.07;
+      cigarette.position.z += Math.cos(facing) * 0.07;
+      cigarette.position.y += player.smokeLift * 0.05;
+      cigarette.rotation.y = facing;
+      if (Math.floor(smoking * 3) !== Math.floor((smoking + dt) * 3)) { // the wisp from the lit end
+        emitSmoke(gun, puffSpot.set(cigarette.position.x + Math.sin(facing) * 0.04, cigarette.position.y + 0.01, cigarette.position.z + Math.cos(facing) * 0.04), 0.35);
+      }
+      if (wasDragging && !smokeDrag) { // breathing out after the drag
+        player.bones.head.getWorldPosition(puffSpot);
+        puffSpot.set(puffSpot.x + Math.sin(facing) * 0.14, puffSpot.y + 0.07, puffSpot.z + Math.cos(facing) * 0.14);
+        for (let i = 0; i < 3; i++) emitSmoke(gun, puffSpot, 0.8);
+      }
+    }
+  } else {
+    smokeDrag = false;
+  }
+  tipsy = Math.max(0, tipsy - dt);
+  if (tipsy > 0) cam.yaw += Math.sin(time * 0.7) * 0.12 * Math.min(1, tipsy / 5) * dt; // the world drifts about
+  if (energy > 0) { energy -= dt; if (energy <= 0) player.boost = 1; }
+  if (testView.has('shop') && byAl && !shopOpen) setShop(true); // ?shop opens Big Al's menu straight away
+  usePrompt.textContent = canLand ? 'Press F to get out' : byBoat ? 'Press F to take the boat out' : byTruck ? 'Press F to drive the truck'
+    : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to collect your wages' : 'Press E to open or close the fridge';
+  usePrompt.style.display = ((byTruck && !boating) || byFridge || byBoat || canLand || byCash || byAl || byMart || gymSpot) && !shopOpen && !martOpen ? 'block' : 'none';
   updateGun(gun, player, dt);
+  if (workout && player.bones) {
+    const { station } = workout;
+    if (station.kind !== 'bench') player.group.position.set(station.spot.x, player.group.position.y, station.spot.z);
+    else player.group.position.copy(station.feet); // lying on the bench
+    // The weights go wherever his hands are.
+    player.group.updateWorldMatrix(true, true);
+    if (station.kind === 'weights') {
+      [player.bones.handL, player.bones.handR].forEach((hand, i) => {
+        hand.getWorldPosition(station.dumbbells[i].position).sub(gym.group.position);
+        station.dumbbells[i].rotation.y = player.group.rotation.y;
+      });
+    } else if (station.kind === 'bench') {
+      const left = player.bones.handL.getWorldPosition(new THREE.Vector3()), right = player.bones.handR.getWorldPosition(new THREE.Vector3());
+      station.barbell.position.copy(left).add(right).multiplyScalar(0.5).sub(gym.group.position);
+    }
+  }
   if (driving || boating) gun.mesh.visible = false;
   updateNpcs(npcs, player.group.position, dt, onStrike);
   updateCamera();
+  if (tipsy > 0) camera.rotateZ(Math.sin(time * 1.3) * 0.07 * Math.min(1, tipsy / 5)); // wobbly after a beer
   updateGrass(grass, player.group.position, time);
 
   sun.target.position.copy(player.group.position);

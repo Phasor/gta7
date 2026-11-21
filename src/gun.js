@@ -319,14 +319,14 @@ const spread = (amount) => scatter.set(Math.random() - 0.5, Math.random() - 0.5,
 
 function findMuzzle(gun) {
   gun.mesh.updateWorldMatrix(true, false);
-  gun.mesh.localToWorld(muzzleSpot.copy(MUZZLE));
+  gun.mesh.localToWorld(muzzleSpot.copy(gun.muzzle));
   forward.set(0, 0, 1).applyQuaternion(gun.mesh.quaternion);
 }
 
 // Fire one shot toward `target`. Returns false if the gun isn't ready yet.
 export function fireGun(gun, target, hitsGround) {
   if (!gun.equipped || gun.cooldown > 0) return false;
-  gun.cooldown = FIRE_INTERVAL;
+  gun.cooldown = gun.interval;
   gun.kick = 1;
   gun.flashTime = 0.06;
   gun.smoulder = 1.6;
@@ -401,4 +401,67 @@ export function updateGun(gun, player, dt) {
     drift.set(0, 0.35 + Math.random() * 0.25, 0).add(spread(0.08));
     puff(gun.smoke, muzzleSpot, drift, 0.03, 0.16 + Math.random() * 0.12, 1.0 + Math.random() * 0.7, SMOKE_COLOR, 0.45 * Math.min(1, gun.smoulder));
   }
+}
+
+// --- The different guns he can carry ------------------------------------------
+
+// interval: seconds between shots. damage: out of 100. range: metres. muzzle: where the bullet leaves.
+const WEAPON_STATS = {
+  pistol: { interval: 0.32, damage: 34, range: 300, muzzle: [0, 0.099, 0.186] },
+  shotgun: { interval: 0.9, damage: 100, range: 25, muzzle: [0, 0.09, 0.82] },   // one shot, but only up close
+  rifle: { interval: 1.2, damage: 100, range: 300, muzzle: [0, 0.09, 0.95] },    // one shot at any distance
+};
+
+// A long gun held by its grip: the barrel points along +Z.
+function makeLongGun(kind) {
+  const group = new THREE.Group();
+  const black = new THREE.MeshStandardMaterial({ color: 0x161718, roughness: 0.45, metalness: 0.4 });
+  const steel = new THREE.MeshStandardMaterial({ color: 0x8f9396, roughness: 0.35, metalness: 0.7 });
+  const wood = new THREE.MeshStandardMaterial({ color: 0x7a4f2c, roughness: 0.6 });
+  const part = (material, w, h, d, y, z, tilt = 0) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+    mesh.position.set(0, y, z);
+    mesh.rotation.x = tilt;
+    mesh.castShadow = true;
+    group.add(mesh);
+  };
+  if (kind === 'shotgun') {
+    part(black, 0.045, 0.08, 0.3, 0.07, 0.05);       // receiver
+    part(steel, 0.028, 0.028, 0.62, 0.09, 0.5);      // barrel
+    part(black, 0.028, 0.028, 0.46, 0.055, 0.42);    // magazine tube
+    part(black, 0.05, 0.05, 0.18, 0.055, 0.4);       // pump grip
+    part(black, 0.04, 0.1, 0.3, 0.035, -0.24, 0.12); // stock
+    part(black, 0.04, 0.1, 0.045, 0, 0, -0.2);       // pistol grip
+  } else {
+    part(wood, 0.045, 0.06, 0.62, 0.06, 0.1);        // wooden fore-end
+    part(wood, 0.045, 0.12, 0.3, 0.03, -0.3, 0.14);  // butt
+    part(steel, 0.024, 0.024, 0.66, 0.09, 0.61);     // barrel
+    part(black, 0.042, 0.042, 0.28, 0.145, 0.1);     // scope
+    part(black, 0.03, 0.03, 0.03, 0.115, 0.02);
+    part(black, 0.03, 0.03, 0.03, 0.115, 0.18);
+  }
+  return group;
+}
+
+// Switch which gun is in his hand.
+export function setWeapon(gun, kind) {
+  if (!gun.models) {
+    gun.models = {
+      pistol: gun.mesh.children.filter((part) => part !== gun.flash && part !== gun.flashLight),
+      shotgun: [makeLongGun('shotgun')],
+      rifle: [makeLongGun('rifle')],
+    };
+    gun.mesh.add(gun.models.shotgun[0], gun.models.rifle[0]);
+  }
+  for (const [name, parts] of Object.entries(gun.models)) for (const part of parts) part.visible = name === kind;
+  const stats = WEAPON_STATS[kind];
+  Object.assign(gun, { kind, interval: stats.interval, damage: stats.damage, range: stats.range, muzzle: new THREE.Vector3(...stats.muzzle) });
+  gun.flash.position.copy(gun.muzzle).z += 0.05;
+  gun.flashLight.position.copy(gun.muzzle);
+}
+
+// A wisp of smoke drifting up from a spot (used for cigarettes).
+export function emitSmoke(gun, position, size = 1) {
+  drift.set((Math.random() - 0.5) * 0.2, 0.35, (Math.random() - 0.5) * 0.2);
+  puff(gun.smoke, position, drift, 0.04 * size, 0.3 * size, 1.8, SMOKE_COLOR, 0.4);
 }
