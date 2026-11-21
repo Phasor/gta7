@@ -81,7 +81,9 @@ export function rayToObstacle(origin, direction, maxDistance) {
 // instead of on the ground.
 const floors = []; // { minX, maxX, minZ, maxZ, height }
 export function addFloor(minX, maxX, minZ, maxZ, height) {
-  floors.push({ minX, maxX, minZ, maxZ, height });
+  const floor = { minX, maxX, minZ, maxZ, height };
+  floors.push(floor);
+  return floor;
 }
 export function floorAt(position) {
   let height = 0;
@@ -94,7 +96,9 @@ export function floorAt(position) {
 // Indoor spaces: while the player is in one, the camera stays under its ceiling.
 const interiors = []; // { minX, maxX, minZ, maxZ, ceiling }
 export function addInterior(minX, maxX, minZ, maxZ, ceiling) {
-  interiors.push({ minX, maxX, minZ, maxZ, ceiling });
+  const interior = { minX, maxX, minZ, maxZ, ceiling };
+  interiors.push(interior);
+  return interior;
 }
 export function ceilingAt(position) {
   for (const i of interiors) {

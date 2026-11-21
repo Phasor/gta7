@@ -12,7 +12,7 @@ import { createNeighbourhood } from './neighbourhood.js';
 import { createGunShop, updateGunShop } from './gunshop.js';
 import { createCity, updateCity } from './city.js';
 import { sfx, updateSound } from './sound.js';
-import { createSea, updateSea, updateJetSkis, jetSkiNear, seaLanding } from './sea.js';
+import { createSea, updateSea, updateJetSkis, jetSkiNear, seaLanding, fishingBoatNear, castOff, leaveFishingBoat, updateFishingBoat } from './sea.js';
 import { createTurfs, updateTurfs } from './gangs.js';
 import { createPoliceStation, updatePoliceStation } from './policestation.js';
 import { createGym, updateGym, stationNear, TRAINING } from './gym.js';
@@ -709,7 +709,7 @@ function toggleDriving() {
   if (boating) {
     if (Math.abs(boating.speed) > 4) return; // too fast to get out
     // Onto the jetty or the bank if one is close; otherwise over the side into the water.
-    const spot = (boating.jetSki ? seaLanding(seaParts, boating) : landingSpot(lake, boating)) || new THREE.Vector3(
+    const spot = boating.fishing ? leaveFishingBoat(seaParts) : (boating.jetSki ? seaLanding(seaParts, boating) : landingSpot(lake, boating)) || new THREE.Vector3(
       boating.group.position.x + Math.cos(boating.heading) * 1.5, 0, boating.group.position.z - Math.sin(boating.heading) * 1.5);
     boating.throttle = 0;
     setEngine(boating, false);
@@ -718,9 +718,10 @@ function toggleDriving() {
     here.copy(spot);
     return;
   }
-  const boat = !driving && player.downTime < 0 ? boatNear(lake, here) || jetSkiNear(seaParts, here) : null;
+  const boat = !driving && player.downTime < 0 ? boatNear(lake, here) || jetSkiNear(seaParts, here) || fishingBoatNear(seaParts, here) : null;
   if (boat) {
     boating = boat;
+    if (boat.fishing) castOff(seaParts);
     setEngine(boat, true);
     gun.equipped = false;
     return;
@@ -865,10 +866,10 @@ function updateCamera() {
   const rx = Math.cos(cam.yaw), rz = -Math.sin(cam.yaw); // camera right
 
   // Point the camera looks at: the character's upper back, nudged sideways.
-  const height = boating ? 1.9 : driving ? 1.9 : cam.height - crouchDrop(player); // camera dips when crouching
+  const height = boating ? (boating.fishing ? 3.4 : 1.9) : driving ? 1.9 : cam.height - crouchDrop(player); // camera dips when crouching
   // Aiming pulls the camera in closer and further over the shoulder.
   const shoulder = driving || boating ? 0 : cam.shoulder + 0.2 * player.aim;
-  const distance = boating ? cam.distance * 1.7 : driving ? cam.distance * 2.1 : cam.distance * (1 - 0.4 * player.aim); // further back to fit the truck in
+  const distance = boating ? cam.distance * (boating.fishing ? 4.4 : 1.7) : driving ? cam.distance * 2.1 : cam.distance * (1 - 0.4 * player.aim); // further back to fit the truck in
   lookAt.set(p.x + rx * shoulder, p.y + height, p.z + rz * shoulder);
 
   const flat = Math.cos(cam.pitch) * distance;
@@ -1080,6 +1081,8 @@ function step(dt) {
   if (testView.has('sail') && !boating && player.bones) { boating = lake.boats[0]; } // ?sail starts in a boat with the throttle open
   updateLake(lake, time, dt, boating, { throttle: testView.has('sail') ? 1 : input.z, steer: testView.has('sail') ? 0.25 : -input.x, cut: input.jump });
   updateJetSkis(seaParts, time, dt, boating, { throttle: testView.has('ski') ? 1 : input.z, steer: testView.has('ski') ? 0.12 : -input.x, brake: input.jump });
+  updateFishingBoat(seaParts, time, dt, boating, { throttle: testView.has('trawl') ? 1 : input.z, steer: testView.has('trawl') ? 0.3 : -input.x, cut: input.jump });
+  if (testView.has('trawl') && !boating && player.bones) { boating = seaParts.fishing; castOff(seaParts); } // ?trawl starts at the fishing boat's wheel, under way
   if (testView.has('ski') && !boating && player.bones) boating = seaParts.skis[0]; // ?ski starts on a jet ski at full throttle
   if (boating) {
     // He stands in the boat, which carries him (and the camera) along.
@@ -1091,7 +1094,7 @@ function step(dt) {
       at.z + Math.cos(boating.heading) * (boating.seat ?? SEAT).back
     );
     player.group.rotation.set(0, boating.heading, 0);
-    sitPlayer(player, dt);
+    sitPlayer(player, dt, !!boating.stand);
     if (Math.abs(boating.speed) > 1) {
       let turn = boating.heading + Math.PI - cam.yaw;
       turn = Math.atan2(Math.sin(turn), Math.cos(turn));
@@ -1172,7 +1175,7 @@ function step(dt) {
   updateGym(gym, player.group.position, dt, time);
   const byTruck = !driving && Math.hypot(player.group.position.x - truck.group.position.x, player.group.position.z - truck.group.position.z) < 3.4;
   const byFridge = !driving && !boating && nearFridge(house, player.group.position);
-  const byBoat = !driving && !boating && !!(boatNear(lake, player.group.position) || jetSkiNear(seaParts, player.group.position));
+  const byBoat = !driving && !boating && !!(boatNear(lake, player.group.position) || jetSkiNear(seaParts, player.group.position) || fishingBoatNear(seaParts, player.group.position));
   if (boating && !boating.jetSki) speedo.textContent += ` · throttle ${Math.round((boating.throttle || 0) * 100)}%`;
   const canLand = boating && Math.abs(boating.speed) < 4;
   const byAl = !driving && !boating && atCounter(), byCash = !driving && !boating && atCashMachine();
@@ -1215,7 +1218,7 @@ function step(dt) {
   if (tipsy > 0) cam.yaw += Math.sin(time * 0.7) * 0.12 * Math.min(1, tipsy / 5) * dt; // the world drifts about
   if (energy > 0) { energy -= dt; if (energy <= 0) player.boost = 1; }
   if (testView.has('shop') && byAl && !shopOpen) setShop(true); // ?shop opens Big Al's menu straight away
-  usePrompt.textContent = canLand ? 'Press F to get out' : byBoat ? (jetSkiNear(seaParts, player.group.position) ? 'Press F to ride the jet ski' : 'Press F to take the boat out') : byTruck ? 'Press F to drive the truck'
+  usePrompt.textContent = canLand ? (boating.fishing ? 'Press F to leave the wheel' : 'Press F to get out') : byBoat ? (fishingBoatNear(seaParts, player.group.position) ? 'Press F to take the wheel' : jetSkiNear(seaParts, player.group.position) ? 'Press F to ride the jet ski' : 'Press F to take the boat out') : byTruck ? 'Press F to drive the truck'
     : byBed ? (isNight() ? 'Press E to sleep until morning' : 'You can sleep here once it gets dark (6 in the evening)') : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to collect your wages' : 'Press E to open or close the fridge';
   usePrompt.style.display = ((byTruck && !boating) || byFridge || byBoat || canLand || byCash || byAl || byMart || gymSpot || byBed) && !shopOpen && !martOpen ? 'block' : 'none';
   updateGun(gun, player, dt);

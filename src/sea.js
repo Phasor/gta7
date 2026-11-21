@@ -5,7 +5,7 @@
 // volleyball net and a wooden pier. You can wade in and swim; sailing boats
 // bob further out.
 import * as THREE from 'three';
-import { sea, addObstacle, addFloor } from './world.js';
+import { sea, addObstacle, addFloor, addInterior } from './world.js';
 import { clearings, daylight } from './grass.js';
 import { block, canvasTexture, speckle, makeMaterials, addPalm } from './house.js';
 import { label } from './store.js';
@@ -240,6 +240,10 @@ export function createSea(scene, shoreX, fog, sunDirection) {
     floats.push({ object: boat, height: WATER, phase: bx, lean: 0.05 });
   }
 
+  // The fishing boat, tied up across the end of the pier. Walk off the end of the pier onto it.
+  const fishing = addFishingBoat(group, pierTo + 2.7, pierZ);
+  const boatBox = fishing.box;
+
   // Jet skis moored along the pier. Walk out, stand beside one and press F to ride it.
   const skis = [[26, -1, 0xf2c230, 0x1c1d1f], [36, 1, 0xe0483a, 0xf2f0e6], [46, -1, 0x2f8fd0, 0xf2f0e6], [56, 1, 0xf2f0e6, 0x8a4fd0]].map(([out, side, hull, trim], i) => {
     const ski = makeJetSki(hull, trim);
@@ -253,7 +257,7 @@ export function createSea(scene, shoreX, fog, sunDirection) {
   });
 
   scene.add(group);
-  return { water, floats, skis, shoreX, pier: { z: pierZ, from: pierFrom, to: pierTo } };
+  return { water, floats, skis, shoreX, boatBox, fishing, pier: { z: pierZ, from: pierFrom, to: pierTo } };
 }
 
 // Each frame: the waves move, and anything floating bobs on them.
@@ -346,6 +350,12 @@ export function updateJetSkis(seaParts, time, dt, ridden, input) {
       ski.speed *= 1 - Math.min(1, 4 * dt);
     }
 
+    const hull = seaParts.boatBox; // ...and off the fishing boat
+    if (seaParts.fishing.moored && position.x > hull.minX - 0.8 && position.x < hull.maxX + 0.8 && position.z > hull.minZ - 0.8 && position.z < hull.maxZ + 0.8) {
+      position.x = hull.maxX + 0.8;
+      ski.speed *= 1 - Math.min(1, 4 * dt);
+    }
+
     // Bobbing, leaning into turns, and the bow lifting at speed.
     position.y = WATER + Math.sin(time * 1.8 + ski.phase) * 0.04 + Math.min(ski.speed, 25) * 0.004;
     ski.group.rotation.y = ski.heading;
@@ -371,4 +381,247 @@ export function seaLanding(seaParts, ski) {
   }
   if (position.x < shoreX + 9) return new THREE.Vector3(shoreX - 1.5, SAND, position.z);
   return null;
+}
+
+// --- The fishing boat ----------------------------------------------------------------------
+
+const DECK = 0.9; // height of the boat's deck, just above the pier
+
+// A working fishing boat, "Lucky Catch", moored with its side against the end of the
+// pier. You can walk all over the deck and into the wheelhouse, and take the wheel
+// to sail her (see the functions after this one).
+// (bx, bz) is the middle of the boat; the bow points toward +Z.
+function addFishingBoat(group, bx, bz) {
+  const boat = new THREE.Group();
+  boat.position.set(bx, 0, bz);
+  const plain = (color, roughness = 0.7, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness, ...extra });
+  const white = plain(0xf2f0e8, 0.6), blue = plain(0x1f5a8a, 0.6), rust = plain(0x8a4a2a, 0.9), dark = plain(0x26282b, 0.7);
+  const steel = plain(0x9ea3a7, 0.4, { metalness: 0.6 }), rope = plain(0xcdbb8e, 1);
+  const glass = new THREE.MeshStandardMaterial({ color: 0xbfe0e6, roughness: 0.05, metalness: 0.2, transparent: true, opacity: 0.25, depthWrite: false });
+  const planks = new THREE.MeshStandardMaterial({ roughness: 0.85, map: canvasTexture(64, (ctx, s) => {
+    ctx.fillStyle = '#a58a62';
+    ctx.fillRect(0, 0, s, s);
+    speckle(ctx, s, 500, 0.08);
+    ctx.fillStyle = 'rgba(40,28,16,0.7)';
+    for (let x = 0; x < s; x += 8) ctx.fillRect(x, 0, 1.5, s);
+  }, 0.5, 0.2) });
+  const put = (material, w, h, d, x, y, z) => block(boat, material, w, h, d, x, DECK + y, z); // y: height above the deck
+  const solids = []; // everything solid aboard, so it can all be switched off while she is under way
+  const solid = (x, z, w, d, height) => solids.push(addObstacle(bx + x - w / 2, bx + x + w / 2, bz + z - d / 2, bz + z + d / 2, DECK + height));
+  const thing = (material, w, h, d, x, z) => { solid(x, z, w, d, h); return put(material, w, h, d, x, h / 2, z); };
+
+  // Hull: flat stern, straight sides, and a pointed bow. White above a blue waterline.
+  const outline = new THREE.Shape([[-2.5, -7], [2.5, -7], [2.5, 3], [0, 7.5], [-2.5, 3]].map(([x, z]) => new THREE.Vector2(x, z)));
+  const flat = (material, depth, y, scale = 1) => { // the outline laid flat, `depth` thick, with its top at height y
+    const mesh = new THREE.Mesh(new THREE.ExtrudeGeometry(outline, { depth, bevelEnabled: false }), material);
+    mesh.rotation.x = Math.PI / 2;
+    mesh.scale.set(scale, scale, 1);
+    mesh.position.y = y;
+    mesh.castShadow = true;
+    boat.add(mesh);
+  };
+  flat(white, 0.75, DECK);
+  flat(blue, 0.9, DECK - 0.75, 0.99);
+  flat(planks, 0.03, DECK + 0.03, 0.96); // the deck
+
+  // Bulwarks (the low walls round the deck), with a gap where the gangway comes aboard.
+  const wall = (x, z, w, d) => { thing(white, w, 0.75, d, x, z); put(blue, w + 0.08, 0.07, d + 0.08, x, 0.78, z); };
+  wall(0, -6.9, 5, 0.2);              // stern
+  wall(2.4, -2, 0.2, 10);             // right side
+  wall(-2.4, -4.1, 0.2, 5.8);         // left side, aft of the gangway
+  wall(-2.4, 1.8, 0.2, 2.4);          // left side, forward of it
+  for (const side of [-1, 1]) {       // the two sides of the bow, running in to the point
+    const length = Math.hypot(2.4, 4.4);
+    const bowWall = put(white, 0.2, 0.75, length, side * 1.2, 0.375, 5.2);
+    bowWall.rotation.y = -side * Math.atan2(2.4, 4.4);
+    const cap = put(blue, 0.28, 0.07, length, side * 1.2, 0.78, 5.2);
+    cap.rotation.y = bowWall.rotation.y;
+    for (let i = 0; i <= 6; i++) solid(side * (2.4 - i * 0.4), 3 + i * 0.73, 0.45, 0.75, 0.75);
+  }
+  put(planks, 1.5, 0.06, 1.7, -3.0, -0.07, -0.3); // gangway plank from the pier
+  for (const z of [-1.3, 0.7]) put(steel, 0.06, 1.0, 0.06, -2.4, 0.5, z);
+
+  // Wheelhouse: four walls with windows all round, a doorway at the back, and a roof.
+  const H = 2.2, x0 = 1.5, zBack = 1.5, zFront = 4.6, zMid = (zBack + zFront) / 2, depth = zFront - zBack;
+  const panel = (w, d, x, z, windowed) => {
+    put(white, w, 0.95, d, x, 0.475, z);                       // lower wall
+    put(white, w, H - 1.85, d, x, 1.85 + (H - 1.85) / 2, z);   // above the windows
+    if (windowed) put(glass, Math.max(0.04, w - 0.1), 0.9, Math.max(0.04, d - 0.1), x, 1.4, z);
+    else put(white, w, 0.9, d, x, 1.4, z);
+    solid(x, z, w, d, H);
+  };
+  panel(0.12, depth, -x0, zMid, true);
+  panel(0.12, depth, x0, zMid, true);
+  panel(x0 * 2, 0.12, 0, zFront, true);
+  panel(0.95, 0.12, -1.02, zBack, false);                      // back wall, either side of the door
+  panel(0.95, 0.12, 1.02, zBack, false);
+  put(white, 1.1, H - 1.95, 0.12, 0, 1.95 + (H - 1.95) / 2, zBack);
+  for (const [px, pz] of [[-x0, zBack], [x0, zBack], [-x0, zFront], [x0, zFront]]) put(blue, 0.16, H, 0.16, px, H / 2, pz); // corner posts
+  put(blue, x0 * 2 + 0.5, 0.12, depth + 0.6, 0, H + 0.06, zMid); // roof
+  const interior = addInterior(bx - x0 + 0.1, bx + x0 - 0.1, bz + zBack + 0.1, bz + zFront - 0.1, DECK + H);
+  put(new THREE.MeshBasicMaterial({ map: label('LUCKY CATCH', null, '#1f5a8a', '#f2f0e8', 512, 96) }), 2.2, 0.36, 0.03, 0, 2.05, zBack - 0.08);
+
+  // Inside: the console with the wheel, a screen and throttle, the skipper's stool, and a bench.
+  thing(dark, 2.6, 1.0, 0.6, 0, zFront - 0.45);
+  const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.03, 8, 20), plain(0x8a6240, 0.5));
+  wheel.position.set(-0.4, DECK + 1.2, zFront - 0.82);
+  boat.add(wheel);
+  for (let spoke = 0; spoke < 3; spoke++) put(plain(0x8a6240, 0.5), 0.5, 0.03, 0.03, -0.4, 1.2, zFront - 0.82).rotation.z = spoke * Math.PI / 3;
+  put(new THREE.MeshBasicMaterial({ color: 0x2fa0c0 }), 0.5, 0.32, 0.03, 0.55, 1.2, zFront - 0.72); // fish finder
+  put(steel, 0.05, 0.22, 0.05, 1.05, 1.1, zFront - 0.6);                                              // throttle lever
+  thing(dark, 0.4, 0.7, 0.4, -0.4, zFront - 1.5);
+  thing(plain(0x8a6240, 0.6), 0.5, 0.45, 1.4, 1.15, zBack + 0.95);
+  put(plain(0xe0483a, 0.9), 0.5, 0.06, 1.4, 1.15, 0.48, zBack + 0.95);
+
+  // On the roof: a mast with a light, a radar bar, and a boom reaching back over the working deck.
+  put(steel, 0.1, 3.0, 0.1, 0, H + 1.6, zBack + 0.5);
+  put(new THREE.MeshBasicMaterial({ color: 0xfff3cf }), 0.16, 0.16, 0.16, 0, H + 3.15, zBack + 0.5);
+  put(white, 1.3, 0.1, 0.16, 0, H + 0.45, zFront - 0.8);
+  const boom = put(steel, 0.09, 0.09, 5.2, 0, H + 1.9, zBack - 1.9);
+  boom.rotation.x = 0.22;
+  put(steel, 0.02, 1.4, 0.02, 0, H + 1.75, zBack - 4.3);       // cable
+  put(rust, 0.14, 0.2, 0.14, 0, H + 0.95, zBack - 4.3);         // hook
+
+  // Working deck: a heap of net with floats, crates of fish, a winch, a cool box, rods and rope.
+  const net = new THREE.Mesh(new THREE.IcosahedronGeometry(0.9, 1), plain(0x3f7a5a, 1, { flatShading: true }));
+  net.scale.set(1.2, 0.45, 1.1);
+  net.position.set(1.1, DECK + 0.35, -5.3);
+  boat.add(net);
+  solid(1.1, -5.3, 1.9, 1.7, 0.7);
+  for (const [fx, fz] of [[0.5, -4.8], [1.5, -5.0], [1.1, -5.9], [1.9, -5.6]]) {
+    const float = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), plain(0xf07a1c, 0.6));
+    float.position.set(fx, DECK + 0.72, fz);
+    boat.add(float);
+  }
+  for (const [cx, cz, level] of [[-1.5, -5.6, 0], [-1.5, -4.7, 0], [-1.5, -5.15, 1]]) {
+    put(plain(0x2f8fd0, 0.7), 0.85, 0.34, 0.6, cx, 0.17 + level * 0.36, cz);
+    for (let fish = 0; fish < 4; fish++) {                     // silver fish packed in ice
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), plain(0xc9d2d8, 0.25, { metalness: 0.7 }));
+      body.scale.set(2.3, 0.5, 0.8);
+      body.position.set(cx - 0.18 + (fish % 2) * 0.36, DECK + 0.37 + level * 0.36, cz - 0.14 + (fish >> 1) * 0.28);
+      boat.add(body);
+    }
+  }
+  solid(-1.5, -5.15, 0.9, 1.6, 0.75);
+  thing(rust, 0.8, 0.6, 0.6, 0, -2.6);                          // winch
+  const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.7, 14), rope);
+  drum.rotation.z = Math.PI / 2;
+  drum.position.set(0, DECK + 0.75, -2.6);
+  boat.add(drum);
+  thing(white, 0.7, 0.45, 0.45, 1.8, -1.0);                     // cool box
+  put(blue, 0.72, 0.06, 0.47, 1.8, 0.48, -1.0);
+  for (const rx of [-1.6, -0.8, 0.8, 1.6]) {                    // fishing rods in holders along the stern
+    const rod = put(dark, 0.025, 2.6, 0.025, rx, 1.6, -6.75);
+    rod.rotation.x = -0.35;
+  }
+  const coil = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.06, 6, 16), rope);
+  coil.rotation.x = Math.PI / 2;
+  coil.position.set(-1.7, DECK + 0.1, -1.6);
+  boat.add(coil);
+  for (const side of [-1, 1]) {                                 // lifebuoys on the wheelhouse
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.07, 8, 18), plain(0xe0483a, 0.6));
+    ring.rotation.y = Math.PI / 2;
+    ring.position.set(side * (x0 + 0.1), DECK + 1.15 - 0.6, zMid);
+    boat.add(ring);
+  }
+  // Her name on the stern, and mooring ropes to the pier.
+  put(new THREE.MeshBasicMaterial({ map: label('LUCKY CATCH', 'MIAMI', '#f2f0e8', '#1f5a8a', 512, 128) }), 2.6, 0.5, 0.03, 0, -0.3, -7.03);
+  for (const z of [-5, 2.2]) {
+    const line = put(rope, 1.6, 0.04, 0.04, -3.1, 0.35, z);
+    line.rotation.z = 0.35;
+  }
+
+  group.add(boat);
+  // You can stand anywhere on the boat (and on the plank across to it) instead of being in the water.
+  const box = { minX: bx - 2.5, maxX: bx + 2.5, minZ: bz - 7, maxZ: bz + 7.5 };
+  const floor = addFloor(box.minX - 0.4, box.maxX, box.minZ, box.maxZ, DECK);
+  const dock = { minX: box.minX - 0.6, maxX: box.maxX, minZ: box.minZ, maxZ: box.maxZ };
+  sea.docks.push(dock);
+  const wake = makeSpray();
+  wake.scale.set(2.4, 1, 2.2);
+  group.add(wake);
+  return {
+    box, group: boat, wake, solids, floor, dock, interior, berth: { x: bx, z: bz }, helm: { x: 0, z: zFront - 1.5 },
+    moored: true, heading: 0, speed: 0, steer: 0, throttle: 0, phase: 0, engine: null,
+    fishing: true, stand: true, seat: { back: zFront - 1.5, height: DECK + 0.4 }, // he stands at the wheel
+  };
+}
+
+// --- Sailing the fishing boat -----------------------------------------------------------------
+// Tied up, she is a solid place to walk about on. Under way she is a vehicle, steered
+// from the wheel, and nobody can walk on her until she is tied up again.
+
+const BOAT_TOP_SPEED = 14; // metres per second, about 30 mph
+
+// The fishing boat, if `position` is somewhere he could take her wheel from: standing
+// at the wheel while she is tied up, or in the water beside her when she is adrift.
+export function fishingBoatNear(seaParts, position) {
+  const f = seaParts.fishing, at = f.group.position;
+  if (f.moored) return Math.hypot(position.x - (at.x + f.helm.x), position.z - (at.z + f.helm.z)) < 1.5 && position.y > 0.5 ? f : null;
+  return Math.hypot(position.x - at.x, position.z - at.z) < 8 ? f : null;
+}
+
+// Let go the ropes: everything aboard stops being solid so she can move.
+export function castOff(seaParts) {
+  const f = seaParts.fishing;
+  if (!f.moored) return;
+  f.moored = false;
+  for (const o of f.solids) { o.saved = o.height; o.height = -Infinity; }
+  f.floor.saved = f.floor.height; f.floor.height = 0;
+  for (const area of [f.dock, f.interior]) { area.saved = area.maxX; area.maxX = area.minX - 1; }
+}
+
+// He lets go of the wheel. Close to the pier she is tied up again and he steps away
+// from the wheel on deck; anywhere else he goes over the side and she is left adrift.
+// Returns where he ends up.
+export function leaveFishingBoat(seaParts) {
+  const f = seaParts.fishing, at = f.group.position;
+  f.throttle = 0;
+  if (Math.hypot(at.x - f.berth.x, at.z - f.berth.z) < 16) {
+    f.moored = true;
+    f.heading = 0;
+    f.group.position.set(f.berth.x, 0, f.berth.z);
+    f.group.rotation.set(0, 0, 0);
+    for (const o of f.solids) o.height = o.saved;
+    f.floor.height = f.floor.saved;
+    for (const area of [f.dock, f.interior]) area.maxX = area.saved;
+    return new THREE.Vector3(f.berth.x + f.helm.x, DECK, f.berth.z + f.helm.z - 0.9);
+  }
+  return new THREE.Vector3(at.x + Math.cos(f.heading) * 4, 0, at.z - Math.sin(f.heading) * 4);
+}
+
+// input: { throttle: -1..1 (moves the throttle lever), steer: -1 (right) .. 1 (left), cut: back to idle }.
+export function updateFishingBoat(seaParts, time, dt, ridden, input) {
+  const f = seaParts.fishing, position = f.group.position, { shoreX, pier } = seaParts;
+  if (f.moored) { f.wake.material.opacity = 0; return; }
+  if (f === ridden) {
+    f.throttle = THREE.MathUtils.clamp(f.throttle + input.throttle * 0.4 * dt, -0.2, 1);
+    if (input.cut) f.throttle = 0;
+    f.steer += (input.steer - f.steer) * Math.min(1, 2 * dt);
+    f.heading += f.steer * 0.55 * THREE.MathUtils.clamp(f.speed / 5, -1, 1) * dt; // a heavy boat turns slowly
+  } else {
+    f.throttle = 0;
+    f.steer *= 1 - Math.min(1, 2 * dt);
+  }
+  f.speed += (f.throttle * BOAT_TOP_SPEED - f.speed) * Math.min(1, 0.5 * dt);
+  position.x += Math.sin(f.heading) * f.speed * dt;
+  position.z += Math.cos(f.heading) * f.speed * dt;
+
+  // She needs deep water, stays on the map, and can't go through the pier.
+  if (position.x < shoreX + 14) { position.x = shoreX + 14; f.speed *= 1 - Math.min(1, 3 * dt); }
+  position.x = Math.min(position.x, shoreX + 420);
+  position.z = THREE.MathUtils.clamp(position.z, -1100, 1100);
+  if (position.x < pier.to + 2.7 && Math.abs(position.z - pier.z) < 5.5) {
+    if (position.x > pier.to - 1) position.x = pier.to + 2.7;
+    else position.z = pier.z + (position.z < pier.z ? -5.5 : 5.5);
+    f.speed *= 1 - Math.min(1, 3 * dt);
+  }
+
+  // Rolling on the swell, heeling a little in turns.
+  position.y = Math.sin(time * 1.1) * 0.06;
+  f.group.rotation.set(Math.sin(time * 0.9) * 0.015 - Math.max(f.speed, 0) * 0.002, f.heading, Math.sin(time * 1.3) * 0.025 - f.steer * f.speed * 0.006, 'YXZ');
+  f.wake.position.set(position.x, WATER + 0.03, position.z);
+  f.wake.rotation.y = f.heading;
+  f.wake.material.opacity = THREE.MathUtils.clamp((f.speed - 0.8) / 8, 0, 0.8);
+  if (f.engine) f.engine.tone.frequency.setTargetAtTime(52 + Math.abs(f.speed) * 4, f.engine.context.currentTime, 0.15); // a slow diesel thud
 }

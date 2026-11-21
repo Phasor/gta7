@@ -557,7 +557,8 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
 
 // Sitting down (in a boat): thighs forward, shins down, one hand back on the
 // tiller. Call this each frame instead of updatePlayer while he is seated.
-export function sitPlayer(player, dt) {
+// standing: true keeps him on his feet (at a ship's wheel, say) instead of seating him.
+export function sitPlayer(player, dt, standing = false) {
   if (!player.mixer) return;
   const b = player.bones;
   for (const { bone, rotation } of player.cleanPose) bone.quaternion.copy(rotation);
@@ -572,6 +573,7 @@ export function sitPlayer(player, dt) {
 
   sideways.set(1, 0, 0).applyQuaternion(player.group.quaternion);
   forwards.set(0, 0, 1).applyQuaternion(player.group.quaternion);
+  if (standing) return;
   for (const [thigh, shin] of [[b.thighL, b.shinL], [b.thighR, b.shinR]]) {
     turnBone(thigh, sideways, -1.42);
     turnBone(shin, sideways, 1.5);
