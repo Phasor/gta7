@@ -219,6 +219,18 @@ function pose(iguana, bob) {
 
 export function updateIguanas(iguanas, playerPosition, dt) {
   for (const iguana of iguanas) {
+    if (iguana.state === 'dead') continue;      // lying where it fell until someone picks it up
+    if (iguana.state === 'gone') {              // picked up: a new one turns up here after a while
+      iguana.gone -= dt;
+      if (iguana.gone <= 0) {
+        iguana.group.visible = true;
+        iguana.group.rotation.z = 0;
+        iguana.group.position.copy(iguana.home);
+        iguana.state = 'bask';
+        iguana.timer = 3 + Math.random() * 6;
+      }
+      continue;
+    }
     const position = iguana.group.position;
     iguana.timer -= dt;
     const fromPlayerX = position.x - playerPosition.x, fromPlayerZ = position.z - playerPosition.z;
@@ -282,4 +294,37 @@ export function updateIguanas(iguanas, playerPosition, dt) {
     const bob = iguana.state === 'bask' && cycle < 1.2 ? Math.max(0, Math.sin(cycle * 16)) * 0.09 : 0;
     pose(iguana, bob);
   }
+}
+
+// Which living iguana, if any, a bullet from `origin` along `direction` reaches
+// first within `maxDistance`. Returns { iguana, distance } or null.
+export function findIguanaHit(iguanas, origin, direction, maxDistance) {
+  let best = null;
+  for (const iguana of iguanas) {
+    if (iguana.state === 'dead' || iguana.state === 'gone') continue;
+    const p = iguana.group.position, size = iguana.group.scale.x;
+    const ox = origin.x - p.x, oy = origin.y - (p.y + 0.15 * size), oz = origin.z - p.z;
+    const along = ox * direction.x + oy * direction.y + oz * direction.z;
+    const inside = along * along - (ox * ox + oy * oy + oz * oz - (0.45 * size) ** 2);
+    if (inside < 0) continue;
+    const distance = -along - Math.sqrt(inside);
+    if (distance > 0 && distance < maxDistance && (!best || distance < best.distance)) best = { iguana, distance };
+  }
+  return best;
+}
+
+// Kill an iguana: it rolls onto its back and lies still.
+export function killIguana(iguana) {
+  if (iguana.state === 'dead' || iguana.state === 'gone') return;
+  iguana.state = 'dead';
+  iguana.speed = 0;
+  iguana.group.rotation.z = Math.PI;
+  iguana.group.position.y += 0.26 * iguana.group.scale.x;
+}
+
+// Pick a dead iguana up: it disappears, and another appears in its place later.
+export function collectIguana(iguana) {
+  iguana.state = 'gone';
+  iguana.gone = 40;
+  iguana.group.visible = false;
 }

@@ -46,6 +46,7 @@ export function createSky(sunDirection) {
       glow: { value: new THREE.Color(PALETTE.sunGlow) },
       sunDir: { value: sunDirection.clone().normalize() },
       time: { value: 0 },
+      night: { value: 0 }, // 0 in the day, 1 at night: dims the clouds and brings out the stars
     },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
@@ -55,7 +56,7 @@ export function createSky(sunDirection) {
       }`,
     fragmentShader: /* glsl */ `
       uniform vec3 top, mid, horizon, glow, sunDir;
-      uniform float time;
+      uniform float time, night;
       varying vec3 vDir;
 
       float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -87,7 +88,10 @@ export function createSky(sunDirection) {
         vec2 uv = d.xz / (d.y + 0.25) * 1.4 + time * 0.004;
         float c = smoothstep(0.52, 0.78, fbm(uv));
         vec3 cloud = mix(vec3(1.0, 0.97, 0.9), vec3(0.82, 0.8, 0.82), fbm(uv * 2.0 + 7.0) * 0.6);
-        col = mix(col, cloud, c * smoothstep(0.02, 0.3, d.y) * 0.9);
+        col = mix(col, cloud * (1.0 - 0.9 * night), c * smoothstep(0.02, 0.3, d.y) * 0.9);
+        // Stars, where there is no cloud.
+        float star = step(0.9982, hash(floor(d.xz / (d.y + 0.35) * 240.0))) * smoothstep(0.03, 0.35, d.y);
+        col += vec3(0.9, 0.93, 1.0) * star * night * (1.0 - c);
 
         gl_FragColor = vec4(col, 1.0);
       }`,

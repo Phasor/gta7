@@ -23,6 +23,8 @@ const LAYERS = [
 // Each is (min x, min z, max x, max z); whoever builds something fills one in.
 // A lake where no grass grows: (centre x, centre z, radius). Its outline matches shoreRadius() in world.js.
 export const pond = new THREE.Vector4();
+// How bright the day is: 1 at noon, low at night. Shared by the grass and the lake.
+export const daylight = { value: 1 };
 export const clearings = Array.from({ length: 40 }, () => new THREE.Vector4());
 
 const SEGMENTS = 4; // pieces per blade: more pieces give a smoother curve
@@ -74,6 +76,7 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
       tallness: { value: height },
       time: { value: 0 },
       clearings: { value: clearings },
+      daylight,
       pond: { value: pond },
       sunDir: { value: sunDirection.clone().normalize() },
       sunColor: { value: new THREE.Color(PALETTE.sunLight) },
@@ -175,6 +178,7 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
       }`,
     fragmentShader: /* glsl */ `
       uniform vec3 sunDir, sunColor, rootColor, lushColor, tipColor, dryColor, hazeColor;
+      uniform float daylight;
       uniform vec2 hazeRange;
       varying float vHeight;
       varying float vDry;
@@ -207,6 +211,7 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
         float glint = pow(max(dot(n, normalize(sunDir + v)), 0.0), 28.0);
         lit += sunColor * glint * vHeight * (0.05 + max(vGust, 0.0) * 0.1);
 
+        lit *= daylight;
         // Distance haze, matching the rest of the world.
         lit = mix(lit, hazeColor, smoothstep(hazeRange.x, hazeRange.y, dist));
 

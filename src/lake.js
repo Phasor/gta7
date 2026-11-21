@@ -3,7 +3,7 @@
 // Everything is made in code.
 import * as THREE from 'three';
 import { water, shoreRadius, addObstacle, addFloor } from './world.js';
-import { pond, clearings } from './grass.js';
+import { pond, clearings, daylight } from './grass.js';
 import { block, canvasTexture, speckle } from './house.js';
 import { label } from './store.js';
 
@@ -28,6 +28,7 @@ function waterMaterial(fog, sunDirection) {
     transparent: true,
     uniforms: {
       time: { value: 0 },
+      daylight,
       centre: { value: new THREE.Vector3(water.x, water.z, water.radius) },
       sunDir: { value: sunDirection.clone().normalize() },
       hazeColor: { value: fog.color },
@@ -41,7 +42,7 @@ function waterMaterial(fog, sunDirection) {
         gl_Position = projectionMatrix * viewMatrix * world;
       }`,
     fragmentShader: /* glsl */ `
-      uniform float time;
+      uniform float time, daylight;
       uniform vec3 centre, sunDir, hazeColor;
       uniform vec2 hazeRange;
       varying vec3 vWorld;
@@ -79,6 +80,7 @@ function waterMaterial(fog, sunDirection) {
         col = mix(col, vec3(0.60, 0.66, 0.62), glance * 0.38);
         col += vec3(1.0, 0.93, 0.75) * pow(max(dot(reflect(-sunDir, normal), v), 0.0), 90.0) * 0.7;
 
+        col *= daylight;
         col = mix(col, hazeColor, smoothstep(hazeRange.x, hazeRange.y, dist));
         gl_FragColor = vec4(col, mix(0.95, 0.72, shallows)); // you can just see the mud through the shallows
       }`,

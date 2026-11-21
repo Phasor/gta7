@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { createPlayer, updatePlayer, crouchDrop, knockDown, sitPlayer, SIT_DROP, HIP_HEIGHT } from './player.js';
 import { PALETTE, createSky, createComposer } from './look.js';
-import { createGrass, updateGrass } from './grass.js';
+import { createGrass, updateGrass, daylight } from './grass.js';
 import { addDirt } from './terrain.js';
 import { createHouse, updateHouse, toggleFridge, nearFridge } from './house.js';
-import { createIguanas, updateIguanas } from './iguana.js';
+import { createIguanas, updateIguanas, findIguanaHit, killIguana, collectIguana } from './iguana.js';
 import { createStore, updateStore } from './store.js';
 import { createRoad } from './road.js';
 import { createGasStation, updateGasStation } from './gasstation.js';
@@ -36,7 +36,8 @@ scene.fog = new THREE.Fog(PALETTE.skyHorizon, 120, 700); // distance fades into 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
 
 // --- Light ------------------------------------------------------------------
-scene.add(new THREE.HemisphereLight(PALETTE.shade, PALETTE.bounce, 1.7));
+const skyLight = new THREE.HemisphereLight(PALETTE.shade, PALETTE.bounce, 1.7);
+scene.add(skyLight);
 
 // The sun's shadow area is small and follows the player, so shadows stay sharp.
 const SUN_OFFSET = new THREE.Vector3(-26, 38, 30); // afternoon sun behind the starting view, long shadows
@@ -127,7 +128,7 @@ const saved = (() => { try { return JSON.parse(localStorage.getItem('gta7-save')
 let money = saved.money ?? 1500;
 const owned = new Set(saved.owned || []);
 if (new URLSearchParams(location.search).has('gun')) owned.add('pistol'); // test views start armed
-const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, owned: [...owned], weapon: gun.kind, bag, stats })); } catch { /* no storage */ } };
+const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day })); } catch { /* no storage */ } };
 
 const overlay = (css) => { const el = document.createElement('div'); el.style.cssText = `position:fixed;pointer-events:none;font-family:system-ui,sans-serif;${css}`; document.body.appendChild(el); return el; };
 const moneyEl = overlay('right:18px;top:14px;font-weight:bold;font-size:24px;color:#d8f0c0;background:rgba(30,45,25,0.7);padding:6px 14px;border-radius:8px');
@@ -151,7 +152,10 @@ function drawShop() {
        <b>${owned.has(kind) ? 'OWNED' : `G$ ${item.price.toLocaleString('en-US')}`}</b></div>`).join('');
   shopEl.innerHTML = `<div style="font-size:22px;font-weight:bold;margin-bottom:4px">Big Al's Guns</div>
     <div style="margin-bottom:10px">"What'll it be?" &nbsp;·&nbsp; You have <b>G$ ${money.toLocaleString('en-US')}</b></div>${rows}
-    <div style="margin-top:12px;opacity:0.8">Press 1, 2 or 3 to buy &nbsp;·&nbsp; E to leave</div>`;
+    <div style="display:flex;gap:14px;padding:7px 0;border-top:1px solid rgba(243,230,192,0.25)">
+       <b style="width:26px">4</b><span style="flex:1"><b>Sell iguanas</b><br><small>G$ ${IGUANA_PRICE} each. You are carrying ${bag.iguanas}</small></span>
+       <b>${bag.iguanas ? `+ G$ ${bag.iguanas * IGUANA_PRICE}` : ''}</b></div>
+    <div style="margin-top:12px;opacity:0.8">Press 1, 2 or 3 to buy &nbsp;·&nbsp; 4 to sell &nbsp;·&nbsp; E to leave</div>`;
 }
 function setShop(open) {
   shopOpen = open;
@@ -192,6 +196,7 @@ function showBag() {
   if (bag.cigarettes) parts.push(`${bag.cigarettes} cigarette${bag.cigarettes > 1 ? 's' : ''}`);
   if (bag.beer) parts.push(`${bag.beer} beer${bag.beer > 1 ? 's' : ''}`);
   if (bag.snacks) parts.push(`${bag.snacks} snack${bag.snacks > 1 ? 's' : ''}`);
+  if (bag.iguanas) parts.push(`${bag.iguanas} iguana${bag.iguanas > 1 ? 's' : ''}`);
   bagEl.textContent = parts.join(' · ');
   bagEl.style.display = parts.length ? 'block' : 'none';
 }
@@ -242,7 +247,7 @@ function smoke() {
   if (!bag.lighter) return toast('You have cigarettes but nothing to light them with. Buy a lighter.');
   bag.cigarettes--;
   smoking = 12; // three drags
-  toast('You light a cigarette. *cough*');
+  toast('You light a cigarette. *cough*' + unhealthy());
   showBag(); persist();
 }
 function drink() {
@@ -257,7 +262,7 @@ function eat() {
   bag.snacks--;
   energy = 30;
   player.boost = 1.35;
-  toast('You eat the snacks. You feel quick on your feet!');
+  toast('You eat the snacks. You feel quick on your feet!' + unhealthy());
   showBag(); persist();
 }
 const atMartCounter = () => near(22.7, -22.2, 1.7); // in front of the cashier in Sunny's Mart
@@ -298,6 +303,123 @@ function finishWorkout() {
   player.group.position.set(station.spot.x, 0, station.spot.z);
   workout = null;
 }
+// --- Other ways to make money ----------------------------------------------------------
+// 1. Iguanas: shoot or punch one, walk over it to pick it up, and sell it to Big Al.
+// 2. People you knock out or kill drop whatever cash they had: G$ 0, 1, 5 or 10.
+const IGUANA_PRICE = 40;
+bag.iguanas ??= 0;
+function sellIguanas() {
+  if (!bag.iguanas) return toast('You have no iguanas to sell. Shoot or punch some, then walk over them to pick them up.');
+  const earned = bag.iguanas * IGUANA_PRICE;
+  toast(`Big Al buys your ${bag.iguanas} iguana${bag.iguanas > 1 ? 's' : ''} for G$ ${earned}.`);
+  money += earned;
+  bag.iguanas = 0;
+  showMoney(); showBag(); persist(); drawShop();
+}
+const drops = []; // bundles of cash lying on the ground
+const billMaterial = new THREE.MeshStandardMaterial({ color: 0x4f9a55, roughness: 0.8 });
+const bandMaterial = new THREE.MeshStandardMaterial({ color: 0xeee6c8, roughness: 0.8 });
+function dropCash(at, fixed) {
+  const amount = fixed ?? [0, 1, 5, 10][Math.floor(Math.random() * 4)];
+  if (!amount) return toast('They had no money on them.');
+  const mesh = new THREE.Group();
+  mesh.add(new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.04 + amount * 0.006, 0.16), billMaterial));
+  mesh.add(new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.045 + amount * 0.006, 0.165), bandMaterial));
+  mesh.position.set(at.x, at.y + 0.35, at.z);
+  scene.add(mesh);
+  drops.push({ mesh, amount, life: 90, height: at.y + 0.35 });
+}
+function updateDrops(dt, time) {
+  for (let i = drops.length - 1; i >= 0; i--) {
+    const drop = drops[i];
+    drop.life -= dt;
+    drop.mesh.rotation.y += dt * 2;                               // it spins and bobs so you can spot it
+    drop.mesh.position.y = drop.height + Math.sin(time * 3 + i) * 0.06;
+    const taken = !driving && !boating && near(drop.mesh.position.x, drop.mesh.position.z, 1.2);
+    if (taken) {
+      money += drop.amount;
+      showMoney(); persist();
+      toast(`You pick up G$ ${drop.amount}.`);
+    }
+    if (taken || drop.life <= 0) {
+      scene.remove(drop.mesh);
+      drops.splice(i, 1);
+    }
+  }
+}
+// --- Day and night ---------------------------------------------------------------------
+// A full day takes 12 minutes. The sun rises at 6:00 and sets at 18:00; at night the
+// moon gives a little blue light, the stars come out, and signs and lamps stand out.
+const DAY_SECONDS = 720;
+let hourNow = saved.clock ?? 8;  // the hour, 0 to 24
+let day = saved.day ?? 1;
+const sunOffset = SUN_OFFSET.clone(); // where the sun (or moon) is, relative to the player
+const clockEl = overlay('left:18px;top:14px;font-weight:bold;font-size:20px;color:#f3e9d2;background:rgba(40,30,20,0.65);padding:6px 14px;border-radius:8px');
+const fadeEl = overlay('inset:0;background:#000;opacity:0;transition:opacity 1s');
+const isNight = () => hourNow >= 20 || hourNow < 6;
+const SKY = {
+  top: [new THREE.Color(0x04060e), new THREE.Color(PALETTE.skyTop)],
+  mid: [new THREE.Color(0x0a1124), new THREE.Color(PALETTE.skyMid)],
+  horizon: [new THREE.Color(0x141c33), new THREE.Color(PALETTE.skyHorizon)],
+  glow: [new THREE.Color(0xcfd8ff), new THREE.Color(PALETTE.sunGlow)],
+  light: [new THREE.Color(0x8fa8d8), new THREE.Color(PALETTE.sunLight)],
+  dusk: new THREE.Color(0xf29a58), duskLight: new THREE.Color(0xffa060),
+};
+function updateDaylight(dt) {
+  if (testView.has('hour')) hourNow = Number(testView.get('hour')); // ?hour=22 fixes the time
+  else hourNow += dt * 24 / DAY_SECONDS;
+  if (hourNow >= 24) { hourNow -= 24; day++; }
+  const angle = (hourNow - 6) / 12 * Math.PI, height = Math.sin(angle);   // the sun's arc across the sky
+  const bright = THREE.MathUtils.smoothstep(height, -0.12, 0.3);        // 0 at night, 1 in full day
+  const dusk = bright * (1 - THREE.MathUtils.smoothstep(height, 0.15, 0.6)); // sunrise and sunset
+  // The sun by day; the moon, on the opposite arc, by night.
+  const up = height > -0.12 ? Math.max(height, 0.08) : Math.max(-height, 0.3);
+  const across = height > -0.12 ? Math.cos(angle) : -Math.cos(angle);
+  sunOffset.set(-across * 45, up * 48, 26);
+
+  const u = sky.material.uniforms;
+  u.top.value.lerpColors(SKY.top[0], SKY.top[1], bright);
+  u.mid.value.lerpColors(SKY.mid[0], SKY.mid[1], bright).lerp(SKY.dusk, dusk * 0.35);
+  u.horizon.value.lerpColors(SKY.horizon[0], SKY.horizon[1], bright).lerp(SKY.dusk, dusk * 0.8);
+  u.glow.value.lerpColors(SKY.glow[0], SKY.glow[1], bright);
+  u.sunDir.value.copy(sunOffset).normalize();
+  u.night.value = 1 - bright;
+  scene.fog.color.copy(u.horizon.value);
+  sun.color.lerpColors(SKY.light[0], SKY.light[1], bright).lerp(SKY.duskLight, dusk * 0.7);
+  sun.intensity = 0.3 + 2.7 * bright;
+  skyLight.intensity = 0.28 + 1.42 * bright;
+  daylight.value = 0.14 + 0.86 * bright;
+
+  const minutes = Math.floor((hourNow % 1) * 60);
+  clockEl.textContent = `Day ${day} · ${String(Math.floor(hourNow)).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+// Sleeping: at night, the bed in his house skips straight to 7 in the morning.
+const atBed = () => near(9.2, -27.3, 2.1) && player.group.position.x > 7.1 && player.group.position.z < -24.1;
+let sleeping = false;
+function trySleep() {
+  if (sleeping) return;
+  if (!isNight()) return toast('You are not tired yet. You can sleep after 8 in the evening.');
+  sleeping = true;
+  fadeEl.style.opacity = 1;
+  setTimeout(() => {
+    if (hourNow >= 20) day++;
+    hourNow = 7;
+    fadeEl.style.opacity = 0;
+    sleeping = false;
+    persist();
+    toast(`You slept until 7:00. Good morning: it is day ${day}.`);
+  }, 1300);
+}
+
+// Unhealthy habits undo gym work: each one knocks a point off his best stat.
+function unhealthy() {
+  const best = Object.keys(stats).sort((a, b) => stats[b] - stats[a])[0];
+  if (!stats[best]) return '';
+  stats[best]--;
+  showStats();
+  return ` That was unhealthy: your ${best[0].toUpperCase() + best.slice(1)} drops to ${stats[best]}/${MAX_STAT}.`;
+}
 // Where he has to stand to use things.
 const near = (px, pz, reach) => Math.hypot(player.group.position.x - px, player.group.position.z - pz) < reach;
 const atCounter = () => near(54, 13.2, 3.2) && player.group.position.z > 6.3; // in front of Big Al
@@ -308,6 +430,7 @@ function useKey() {
   if (workout) return;
   const station = !driving && !boating ? stationNear(gym, player.group.position) : null;
   if (station) return startWorkout(station);
+  if (atBed()) return trySleep();
   if (martOpen) return setMart(false);
   if (atMartCounter()) return setMart(true);
   if (shopOpen) return setShop(false);
@@ -423,6 +546,7 @@ window.addEventListener('keydown', (e) => {
     const pick = { Digit1: 'pistol', Digit2: 'shotgun', Digit3: 'rifle' }[e.code];
     const martPick = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
     if (martOpen) { if (martPick >= 0) buyMart(martPick); }                 // buying at Sunny's Mart
+    else if (shopOpen && e.code === 'Digit4') sellIguanas();
     else if (!shopOpen && e.code === 'Digit4') smoke();
     else if (!shopOpen && e.code === 'Digit5') drink();
     else if (!shopOpen && e.code === 'Digit6') eat();
@@ -613,9 +737,13 @@ function step(dt) {
         const dx = npc.group.position.x - at.x, dz = npc.group.position.z - at.z, distance = Math.hypot(dx, dz);
         if (distance < reach && (dx * Math.sin(facing) + dz * Math.cos(facing)) / distance > 0.4) { reach = distance; target = npc; }
       }
+      // With nobody in reach, a punch can still flatten an iguana at his feet.
+      const lizardInReach = target ? null : iguanas.find((i) => i.state !== 'dead' && i.state !== 'gone' && Math.hypot(i.group.position.x - at.x, i.group.position.z - at.z) < 1.3);
+      if (lizardInReach) { killIguana(lizardInReach); playStrike('punch'); }
       if (target) {
         const knockedOut = hitNpc(target, at, PUNCHES[punchHand].damage * (1 + 0.15 * stats.strength)); // Strength: harder punches
         playStrike('punch');
+        if (knockedOut) dropCash(target.group.position);
         if (testView.has('npc')) console.log(knockedOut ? 'TEST punch knocked out' : 'TEST punch landed on npc');
       }
     }
@@ -662,6 +790,11 @@ function step(dt) {
     reach = struck.distance;
     hitsGround = false;
   }
+  const lizard = findIguanaHit(iguanas, camera.position, aimDir, reach); // an iguana in the way is hit first
+  if (lizard) {
+    reach = lizard.distance;
+    hitsGround = false;
+  }
   aimPoint.copy(camera.position).addScaledVector(aimDir, Math.max(reach, cam.distance + 2));
 
   // Shooting raises the arm first, then fires once it is up.
@@ -672,11 +805,15 @@ function step(dt) {
   input.kick = gun.kick;
   if ((shotQueued || testView.has('fire')) && player.aim > 0.8 && fireGun(gun, aimPoint, hitsGround)) {
     shotQueued = false;
-    if (struck && struck.distance <= gun.range) {
+    if (lizard && lizard.distance <= gun.range) {
+      killIguana(lizard.iguana);
+      hitFlash = 0.15;
+    } else if (struck && struck.distance <= gun.range) {
       let killed = hitNpc(struck.npc, player.group.position, gun.damage);
       // ?npc=kill makes the first hit count twice, to check the fall without waiting for a second shot.
       if (testView.get('npc') === 'kill') killed = hitNpc(struck.npc, player.group.position) || killed;
       hitFlash = 0.15;
+      if (killed) dropCash(struck.npc.group.position);
       if (testView.has('npc')) console.log(killed ? 'TEST npc killed' : 'TEST npc hit');
     }
   }
@@ -737,6 +874,22 @@ function step(dt) {
   if (driving || boating) speedo.textContent = `${Math.round(Math.abs((boating || truck).speed) * 2.237)} mph`;
   updateHouse(house, player.group.position, dt);
   updateIguanas(iguanas, player.group.position, dt);
+  // Walking over a dead iguana picks it up.
+  if (!driving && !boating) {
+    for (const iguana of iguanas) {
+      if (iguana.state !== 'dead' || !near(iguana.group.position.x, iguana.group.position.z, 1.1)) continue;
+      collectIguana(iguana);
+      bag.iguanas++;
+      showBag(); persist();
+      toast(`You pick up the iguana. You are carrying ${bag.iguanas}. Big Al pays G$ ${IGUANA_PRICE} each.`);
+    }
+  }
+  if (testView.has('earn') && !step.seeded && iguanas.length) { // ?earn kills an iguana and drops some cash, to check both
+    step.seeded = true;
+    killIguana(iguanas[0]);
+    dropCash(new THREE.Vector3(0.5, 0, -2.5), 10);
+  }
+  updateDrops(dt, time);
   // Alligators hunt him while he is in the water. When one gets him it surfaces,
   // the screen flashes red, and a moment later he is hauled out by the jetty.
   const inWater = !boating && !driving && waterDepthAt(player.group.position) > 0.3;
@@ -764,6 +917,7 @@ function step(dt) {
   const byAl = !driving && !boating && atCounter(), byCash = !driving && !boating && atCashMachine();
   if (shopOpen && !byAl) setShop(false); // walking away ends the conversation
   const byMart = !driving && !boating && atMartCounter();
+  const byBed = !driving && !boating && atBed();
   const gymSpot = !driving && !boating && !workout ? stationNear(gym, player.group.position) : null;
   if (martOpen && !byMart) setMart(false);
   if (testView.has('mart') && byMart && !martOpen) setMart(true); // ?mart opens the Sunny's Mart menu straight away
@@ -801,8 +955,8 @@ function step(dt) {
   if (energy > 0) { energy -= dt; if (energy <= 0) player.boost = 1; }
   if (testView.has('shop') && byAl && !shopOpen) setShop(true); // ?shop opens Big Al's menu straight away
   usePrompt.textContent = canLand ? 'Press F to get out' : byBoat ? 'Press F to take the boat out' : byTruck ? 'Press F to drive the truck'
-    : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to collect your wages' : 'Press E to open or close the fridge';
-  usePrompt.style.display = ((byTruck && !boating) || byFridge || byBoat || canLand || byCash || byAl || byMart || gymSpot) && !shopOpen && !martOpen ? 'block' : 'none';
+    : byBed ? (isNight() ? 'Press E to sleep until morning' : 'You can sleep here after 8 in the evening') : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to collect your wages' : 'Press E to open or close the fridge';
+  usePrompt.style.display = ((byTruck && !boating) || byFridge || byBoat || canLand || byCash || byAl || byMart || gymSpot || byBed) && !shopOpen && !martOpen ? 'block' : 'none';
   updateGun(gun, player, dt);
   if (workout && player.bones) {
     const { station } = workout;
@@ -827,10 +981,11 @@ function step(dt) {
   updateGrass(grass, player.group.position, time);
 
   sun.target.position.copy(player.group.position);
-  sun.position.copy(player.group.position).add(SUN_OFFSET);
+  sun.position.copy(player.group.position).add(sunOffset);
 
   sky.position.copy(camera.position); // the sky is always centred on the viewer
   sky.material.uniforms.time.value = time;
+  updateDaylight(dt);
   vintage.uniforms.time.value = time;
 
 }
