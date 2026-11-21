@@ -8,7 +8,7 @@
 // floors above are a shell.
 import * as THREE from 'three';
 import { addObstacle, addFloor, addInterior } from './world.js';
-import { clearings } from './grass.js';
+import { clearings, daylight } from './grass.js';
 import { block, canvasTexture, speckle, makeMaterials, addPalm } from './house.js';
 import { label } from './store.js';
 
@@ -427,6 +427,17 @@ function build(scene, kit, spec, doors) {
 
   scene.add(tower);
 
+  // Neon set into the ground: a line right round the building, a runway to the
+  // doors, and a long strip beside the kerb.
+  const glow = spec.glow, frontEdge = z + sign * d / 2;
+  groundLight(scene, glow, w + 1.6, 0.14, x, frontEdge + sign * 0.8);
+  groundLight(scene, glow, w + 1.6, 0.14, x, z - sign * (d / 2 + 0.8));
+  for (const side of [-1, 1]) {
+    groundLight(scene, glow, 0.14, d + 1.6, x + side * (w / 2 + 0.8), z);
+    groundLight(scene, glow, 0.14, 3.9, x + side * 2.1, frontEdge + sign * 2.9);
+  }
+  groundLight(scene, glow, 50, 0.16, x, far ? -1.72 : -7.28, 0.055);
+
   // On the pavement outside: palm trees, a street lamp, a bench, a planter and a bin.
   const kerbZ = far ? FAR_EDGE + 2.4 : NEAR_EDGE - 2.4;
   for (const side of [-1, 1]) {
@@ -448,6 +459,17 @@ function build(scene, kit, spec, doors) {
   addObstacle(x + w / 5 + 2.2, x + w / 5 + 4.6, kerbZ + sign * 0.3 - 0.45, kerbZ + sign * 0.3 + 0.45, 1.1);
   street(plain(0x2a2d30, 0.6), 0.5, 0.95, 0.5, -w / 4 + 1.2, 0.48, -0.5);                       // bin
   addObstacle(x - w / 4 + 0.95, x - w / 4 + 1.45, kerbZ - sign * 0.5 - 0.25, kerbZ - sign * 0.5 + 0.25, 1);
+}
+
+// A strip of neon set into the ground, with a soft pool of light round it.
+function groundLight(scene, glow, w, d, x, z, y = 0.075) {
+  const strip = new THREE.Mesh(new THREE.BoxGeometry(w, 0.03, d), glow.material);
+  strip.position.set(x, y, z);
+  const pool = new THREE.Mesh(new THREE.PlaneGeometry(w + 2.2, d + 2.2), glow.halo);
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.set(x, y - 0.012, z);
+  pool.renderOrder = 1;
+  scene.add(strip, pool);
 }
 
 // Builds the city, starting at `startX` along the road.
@@ -494,13 +516,35 @@ export function createCity(scene, startX) {
     { side: 'near', x: X(4), w: 32, d: 22, style: 'condo', kind: 'hotel', wall: 0xfdfbf5, accent: 0x2fb3a8, glass: '#2f5560', neon: 0x3ff0d8, name: 'MIRAMAR SUITES',
       tiers: [{ floors: 4, inset: 0 }, { floors: 3, inset: 3 }, { floors: 3, inset: 6 }], ledges: true, steps: true, roofSign: 'MIRAMAR' },
   ];
+  // Ground neon in six colours (no green, no pink), one per building.
+  const pool = canvasTexture(64, (ctx, s) => { // soft-edged patch of light
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, s, s);
+    ctx.filter = 'blur(9px)';
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(16, 16, s - 32, s - 32);
+  }, 1, 1);
+  const glows = [0x2f9bff, 0xff8a1e, 0x8a4fff, 0xffd23a, 0xff3b30, 0xdfeaff].map((colour) => ({
+    base: new THREE.Color(colour),
+    material: new THREE.MeshBasicMaterial({ color: colour }),
+    halo: new THREE.MeshBasicMaterial({ color: colour, alphaMap: pool, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending, depthWrite: false }),
+  }));
   const doors = [];
-  for (const spec of buildings) build(scene, kit, spec, doors);
-  return { doors };
+  buildings.forEach((spec, i) => {
+    spec.glow = glows[(i + (i >= 5 ? 3 : 0)) % glows.length];
+    build(scene, kit, spec, doors);
+  });
+  return { doors, glows };
 }
 
 // Each frame: a building's glass doors slide apart when the player walks up.
 export function updateCity(city, playerPosition, dt) {
+  // The ground neon is dim by day and comes up to full strength at night.
+  const night = 1 - (daylight.value - 0.14) / 0.86;
+  for (const glow of city.glows) {
+    glow.material.color.copy(glow.base).multiplyScalar(0.5 + 0.5 * night);
+    glow.halo.opacity = 0.06 + 0.5 * night;
+  }
   for (const door of city.doors) {
     const near = Math.abs(playerPosition.x - door.spot.x) < 3.2 && Math.abs(playerPosition.z - door.spot.z) < 3.2;
     door.open += ((near ? 1 : 0) - door.open) * Math.min(1, 6 * dt);

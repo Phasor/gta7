@@ -356,15 +356,15 @@ function updateDrops(dt, time) {
   }
 }
 // --- Day and night ---------------------------------------------------------------------
-// A full day takes 12 minutes. The sun rises at 6:00 and sets at 18:00; at night the
+// A full day takes an hour of real time. The sun rises at 6:00 and sets at 18:00; at night the
 // moon gives a little blue light, the stars come out, and signs and lamps stand out.
-const DAY_SECONDS = 720;
+const DAY_SECONDS = 3600; // one hour of real time
 let hourNow = saved.clock ?? 8;  // the hour, 0 to 24
 let day = saved.day ?? 1;
 const sunOffset = SUN_OFFSET.clone(); // where the sun (or moon) is, relative to the player
 const clockEl = overlay('left:18px;top:14px;font-weight:bold;font-size:20px;color:#f3e9d2;background:rgba(40,30,20,0.65);padding:6px 14px;border-radius:8px');
 const fadeEl = overlay('inset:0;background:#000;opacity:0;transition:opacity 1s');
-const isNight = () => hourNow >= 20 || hourNow < 6;
+const isNight = () => hourNow >= 18 || hourNow < 6; // dark: from sunset to sunrise
 const SKY = {
   top: [new THREE.Color(0x04060e), new THREE.Color(PALETTE.skyTop)],
   mid: [new THREE.Color(0x0a1124), new THREE.Color(PALETTE.skyMid)],
@@ -407,11 +407,11 @@ const atBed = () => near(9.2, -27.3, 2.1) && player.group.position.x > 7.1 && pl
 let sleeping = false;
 function trySleep() {
   if (sleeping) return;
-  if (!isNight()) return toast('You are not tired yet. You can sleep after 8 in the evening.');
+  if (!isNight()) return toast('You are not tired yet. You can sleep once it gets dark, at 6 in the evening.');
   sleeping = true;
   fadeEl.style.opacity = 1;
   setTimeout(() => {
-    if (hourNow >= 20) day++;
+    if (hourNow >= 18) day++;
     hourNow = 7;
     fadeEl.style.opacity = 0;
     sleeping = false;
@@ -1036,7 +1036,7 @@ function step(dt) {
   if (energy > 0) { energy -= dt; if (energy <= 0) player.boost = 1; }
   if (testView.has('shop') && byAl && !shopOpen) setShop(true); // ?shop opens Big Al's menu straight away
   usePrompt.textContent = canLand ? 'Press F to get out' : byBoat ? 'Press F to take the boat out' : byTruck ? 'Press F to drive the truck'
-    : byBed ? (isNight() ? 'Press E to sleep until morning' : 'You can sleep here after 8 in the evening') : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to collect your wages' : 'Press E to open or close the fridge';
+    : byBed ? (isNight() ? 'Press E to sleep until morning' : 'You can sleep here once it gets dark (6 in the evening)') : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to collect your wages' : 'Press E to open or close the fridge';
   usePrompt.style.display = ((byTruck && !boating) || byFridge || byBoat || canLand || byCash || byAl || byMart || gymSpot || byBed) && !shopOpen && !martOpen ? 'block' : 'none';
   updateGun(gun, player, dt);
   if (workout && player.bones) {

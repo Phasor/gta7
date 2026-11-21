@@ -15,6 +15,9 @@ const FOLDER = `${import.meta.env.BASE_URL}models/people/`;
 
 // Who is out there. `clothes` turns the colours of the outfit round the colour
 // wheel (in degrees) so the same body gives several different looks.
+// `home` is where they hang about: the first six live round Palm Ave, and the
+// rest among the skyscrapers of Palm City.
+const CITY_HUES = [0, 140, 200, 250, 90];
 const PEOPLE = [
   { kind: 'woman', clothes: 0, height: 1.0 },
   { kind: 'man', clothes: 0, height: 1.0 },
@@ -22,6 +25,13 @@ const PEOPLE = [
   { kind: 'man', clothes: 200, height: 1.05 },
   { kind: 'woman', clothes: 250, height: 1.03 },
   { kind: 'man', clothes: 90, height: 0.96 },
+  // Fourteen more, spread along the city street.
+  ...Array.from({ length: 14 }, (_, i) => ({
+    kind: i % 2 ? 'man' : 'woman',
+    clothes: CITY_HUES[(i * 2 + (i % 2)) % 5],
+    height: 0.95 + (i * 7 % 10) * 0.012,
+    home: [650 + i * 17, i % 2 ? -4 : -5],
+  })),
 ];
 
 const WALK_SPEED = 1.4;
@@ -55,9 +65,12 @@ function onTheSpot(clip, name) {
 // A copy of a material with the outfit's colours changed: coloured cloth is turned
 // round the colour wheel and white cloth is dyed. Skin, hair and anything else in
 // the brown-to-peach range is left alone.
+const recoloured = new Map();
 function recolour(material, degrees) {
   const image = material.map?.image;
   if (!degrees || !image) return material;
+  const cacheKey = material.uuid + ':' + degrees; // repainting is slow, so each outfit is only made once
+  if (recoloured.has(cacheKey)) return recoloured.get(cacheKey);
   const canvas = document.createElement('canvas');
   canvas.width = image.width;
   canvas.height = image.height;
@@ -83,6 +96,7 @@ function recolour(material, degrees) {
   map.wrapT = material.map.wrapT;
   const copy = material.clone();
   copy.map = map;
+  recoloured.set(cacheKey, copy);
   return copy;
 }
 
@@ -212,9 +226,10 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
         kind: person.kind, group, tilt, model, mixer, actions, halfMap, arm,
         // The striking arm's animated pose, saved so the swing can be undone each frame.
         clean: arm.slice(0, 2).map((part) => ({ bone: part, rotation: part.quaternion.clone() })),
+        home: person.home ? new THREE.Vector3(person.home[0], 0, person.home[1]) : null,
         target: new THREE.Vector3(), pace: 0, strikeTime: 0, struck: false, still: false,
       };
-      place(npc, new THREE.Vector3());
+      place(npc, new THREE.Vector3(person.home?.[0] ?? 0, 0, person.home?.[1] ?? 0));
       if (i === 0 && testSpot) {
         npc.group.position.copy(testSpot);
         npc.group.rotation.y = 0;
@@ -378,7 +393,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police) {
       npc.tilt.rotation[npc.fallWay[0]] = npc.fallWay[1] * Math.PI / 2 * tipped;
       npc.tilt.position.y = 0.12 * tipped;
       for (const { bone, from, to: limp } of npc.deathPose) bone.quaternion.slerpQuaternions(from, limp, tipped);
-      if (npc.timer <= 0 && !npc.still) place(npc, playerPosition);
+      if (npc.timer <= 0 && !npc.still) place(npc, npc.home ?? playerPosition); // city people come back in the city
       continue;
     }
 
