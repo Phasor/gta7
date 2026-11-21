@@ -12,8 +12,9 @@ import { createNeighbourhood } from './neighbourhood.js';
 import { createGunShop, updateGunShop } from './gunshop.js';
 import { createCity, updateCity } from './city.js';
 import { sfx, updateSound } from './sound.js';
-import { createSea, updateSea, updateJetSkis, jetSkiNear, seaLanding, fishingBoatNear, castOff, leaveFishingBoat, updateFishingBoat } from './sea.js';
+import { createSea, updateSea, updateJetSkis, jetSkiNear, seaLanding, fishingBoatNear, castOff, leaveFishingBoat, updateFishingBoat, climbAboardSpot, onBoat } from './sea.js';
 import { createTurfs, updateTurfs } from './gangs.js';
+import { makeFish, rollCatch, createFishStall, SHOW_LENGTH } from './fishing.js';
 import { createPoliceStation, updatePoliceStation } from './policestation.js';
 import { createGym, updateGym, stationNear, TRAINING } from './gym.js';
 import { createLake, updateLake, boatNear, landingSpot, SEAT } from './lake.js';
@@ -39,6 +40,7 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(PALETTE.skyHorizon, 260, 1500); // distance fades into the horizon haze, but the city skyline still shows
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+scene.add(camera); // so that things held up in front of the camera (a fish he has caught) are drawn
 
 // --- Light ------------------------------------------------------------------
 const skyLight = new THREE.HemisphereLight(PALETTE.shade, PALETTE.bounce, 1.7);
@@ -215,6 +217,7 @@ function showBag() {
   if (bag.cigarettes) parts.push(`${bag.cigarettes} cigarette${bag.cigarettes > 1 ? 's' : ''}`);
   if (bag.beer) parts.push(`${bag.beer} beer${bag.beer > 1 ? 's' : ''}`);
   if (bag.snacks) parts.push(`${bag.snacks} snack${bag.snacks > 1 ? 's' : ''}`);
+  if (bag.fish?.length) parts.push(`${bag.fish.length} fish`);
   if (bag.iguanas) parts.push(`${bag.iguanas} iguana${bag.iguanas > 1 ? 's' : ''}`);
   bagEl.textContent = parts.join(' · ');
   bagEl.style.display = parts.length ? 'block' : 'none';
@@ -654,6 +657,174 @@ function updateBlood(dt) {
   }
   if (health >= 100 && wounds.length) clearWounds();
 }
+// --- Fishing ------------------------------------------------------------------------------
+// Cast from the stern of the fishing boat while she is tied up, or from the wheel when
+// she is stopped out at sea (the further out, the bigger the fish). E casts; when the
+// float dips, E again hooks it. The catch goes in the hold and sells at the beach stall.
+const HOLD = 20; // how many fish he can carry
+bag.fish ??= [];
+createFishStall(scene, 927, 67);
+const fishingLine = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+  new THREE.LineBasicMaterial({ color: 0xe9e6dc, transparent: true, opacity: 0.8 })
+);
+fishingLine.frustumCulled = false;
+const bobber = new THREE.Group(); // a red and white float
+bobber.add(new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 10), new THREE.MeshStandardMaterial({ color: 0xe0352b, roughness: 0.4 })));
+const bobberTop = new THREE.Mesh(new THREE.SphereGeometry(0.112, 12, 10, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xf2f0e8, roughness: 0.4 }));
+bobber.add(bobberTop);
+fishingLine.visible = bobber.visible = false;
+scene.add(fishingLine, bobber);
+const catchEl = overlay('display:none;left:50%;top:62%;transform:translateX(-50%);text-align:center;font-size:19px;color:#f3e9d2;background:rgba(18,34,46,0.88);padding:10px 24px;border-radius:10px;border:1px solid rgba(243,233,210,0.5)');
+let fishingState = null; // { phase: 'wait' | 'bite' | 'show', timer }
+let shownFish = null;
+const rodTip = new THREE.Vector3(), floatSpot = new THREE.Vector3();
+const atStern = () => {
+  if (!seaParts.fishing.moored || player.group.position.y < 0.5) return false;
+  const stern = onBoat(seaParts.fishing, 0, -5.9);
+  return near(stern.x, stern.z, 1.8);
+};
+const fishingSpot = () => (boating ? !!boating.fishing && Math.abs(boating.speed) < 1.5 : !driving && atStern());
+const atStall = () => !driving && !boating && near(929.6, 67, 2.4);
+const holdValue = () => bag.fish.reduce((sum, fish) => sum + fish.price, 0);
+function castLine() {
+  if (bag.fish.length >= HOLD) return toast(`Your hold is full (${HOLD} fish). Sell them at the fish stall on the beach.`);
+  fishingState = { phase: 'wait', timer: 3 + Math.random() * 6 };
+  sfx('whoosh');
+}
+function landFish(forceSize, forceIndex) {
+  const caught = rollCatch(seaParts.fishing.group.position.x - seaParts.shoreX, forceSize, forceIndex);
+  const weight = caught.weight < 10 ? caught.weight.toFixed(1) : Math.round(caught.weight);
+  bag.fish.push({ name: caught.spec.name, size: caught.size, weight: Number(weight), price: caught.price });
+  showBag(); persist();
+  sfx('levelup');
+  // Hold it up in front of the camera to admire.
+  shownFish = makeFish(caught.spec);
+  shownFish.scale.setScalar(SHOW_LENGTH[caught.size]);
+  shownFish.position.set(0, 0.05, -1.25);
+  camera.add(shownFish);
+  catchEl.innerHTML = `<b style="font-size:24px">${caught.spec.name}</b><br>${caught.size[0].toUpperCase() + caught.size.slice(1)} fish &nbsp;·&nbsp; ${weight} kg &nbsp;·&nbsp; worth <b>G$ ${caught.price}</b>`;
+  catchEl.style.display = 'block';
+  fishingState = { phase: 'show', timer: testView.has('fish') ? 9999 : 4.5 };
+}
+function reelIn() {
+  if (fishingState.phase === 'show') return;
+  if (fishingState.phase === 'wait') { fishingState = null; return toast('You reel in. Nothing on the hook yet.'); }
+  landFish();
+}
+function sellFish() {
+  if (!bag.fish.length) return toast('You have no fish to sell. Cast a line from the fishing boat at the end of the pier.');
+  const total = holdValue(), count = bag.fish.length, best = bag.fish.reduce((a, b) => (b.price > a.price ? b : a));
+  sfx('coin');
+  money += total;
+  bag.fish = [];
+  showMoney(); showBag(); persist();
+  toast(`The fishmonger buys your ${count} fish for G$ ${total.toLocaleString('en-US')}. Best of the lot: the ${best.name} (${best.weight} kg) at G$ ${best.price}.`);
+}
+function updateFishing(dt, time) {
+  if (testView.has('fish') && !fishingState && player.bones) landFish(testView.get('fish'), Number(testView.get('n') || 0)); // ?fish=big&n=4 shows one fish
+  fishingLine.visible = bobber.visible = !!fishingState && fishingState.phase !== 'show';
+  if (!fishingState) return;
+  fishingState.timer -= dt;
+  if (fishingState.phase === 'show') {
+    shownFish.rotation.y = Math.sin(time * 0.8) * 0.9; // turning slowly to show both sides
+    shownFish.rotation.z = Math.sin(time * 1.7) * 0.05;
+    if (fishingState.timer <= 0) {
+      camera.remove(shownFish);
+      shownFish = null;
+      catchEl.style.display = 'none';
+      fishingState = null;
+    }
+    return;
+  }
+  if (!(boating ? !!boating.fishing && Math.abs(boating.speed) < 3 : atStern())) { fishingState = null; return; } // wandered off or got under way
+  // The line runs from the tip of a stern rod to the float bobbing behind the boat.
+  const boat = seaParts.fishing.group, bite = fishingState.phase === 'bite';
+  boat.localToWorld(rodTip.set(0.8, 3.6, -7.3));
+  boat.localToWorld(floatSpot.set(0.8, 0, -12.5));
+  floatSpot.y = 0.2 + (bite ? -0.13 + Math.sin(time * 34) * 0.05 : Math.sin(time * 2.2) * 0.03);
+  bobber.position.copy(floatSpot);
+  const points = fishingLine.geometry.attributes.position;
+  points.setXYZ(0, rodTip.x, rodTip.y, rodTip.z);
+  points.setXYZ(1, floatSpot.x, floatSpot.y, floatSpot.z);
+  points.needsUpdate = true;
+  if (!bite && fishingState.timer <= 0) {
+    fishingState = { phase: 'bite', timer: 1.8 };
+    sfx('splash');
+  } else if (bite && fishingState.timer <= 0) {
+    fishingState = null;
+    toast('Too slow: it got away!');
+  }
+}
+// --- The automatic fishing pole -------------------------------------------------------------
+// The big boom on the fishing boat fishes by itself. T switches it on and off from
+// anywhere aboard. It lowers its hook into the sea, and every so often winds a fish
+// up out of the water and drops it in the hold, until the hold is full.
+const pole = { on: false, phase: 'down', timer: 0, hookY: seaParts.fishing.rig.stowed, catch: null, fish: null };
+const aboardBoat = () => (boating ? !!boating.fishing : !driving && seaParts.fishing.moored && player.group.position.y > 0.5
+  && player.group.position.x > seaParts.boatBox.minX && player.group.position.x < seaParts.boatBox.maxX
+  && player.group.position.z > seaParts.boatBox.minZ && player.group.position.z < seaParts.boatBox.maxZ);
+function toggleAutoPole() {
+  if (!aboardBoat()) return;
+  if (!pole.on && bag.fish.length >= HOLD) return toast(`Your hold is full (${HOLD} fish). Sell them at the fish stall on the beach first.`);
+  pole.on = !pole.on;
+  sfx('click');
+  if (pole.on) { pole.phase = 'down'; pole.timer = 4 + Math.random() * 4; }
+  toast(pole.on ? 'Automatic fishing pole ON. It will keep landing fish until the hold is full.' : 'Automatic fishing pole OFF.');
+}
+function dropPoleFish() {
+  if (pole.fish) pole.fish.parent?.remove(pole.fish);
+  pole.fish = pole.catch = null;
+}
+function updateAutoPole(dt) {
+  if (testView.has('pole') && !pole.on && player.bones) { pole.on = true; pole.phase = 'down'; pole.timer = 1; } // ?pole switches it on
+  const rig = seaParts.fishing.rig;
+  let wantY = rig.stowed, windSpeed = 3;
+  if (!pole.on) {
+    if (pole.fish) dropPoleFish();
+  } else if (pole.phase === 'down') {         // hook in the water, waiting
+    wantY = -0.7;
+    if (pole.hookY < -0.5) pole.timer -= dt;
+    if (pole.timer <= 0) {
+      const caught = rollCatch(seaParts.fishing.group.position.x - seaParts.shoreX);
+      pole.catch = caught;
+      pole.fish = makeFish(caught.spec);
+      const length = SHOW_LENGTH[caught.size] * 1.25;
+      pole.fish.scale.setScalar(length);
+      pole.fish.rotation.z = Math.PI / 2;      // hanging by its mouth, tail down
+      pole.fish.position.y = -0.2 - length / 2;
+      rig.hook.add(pole.fish);
+      pole.phase = 'haul';
+      sfx('splash');
+    }
+  } else if (pole.phase === 'haul') {          // winding the fish up out of the water
+    wantY = 3.0;
+    windSpeed = 2.0;
+    if (pole.hookY >= 2.95) {
+      const caught = pole.catch, weight = caught.weight < 10 ? caught.weight.toFixed(1) : Math.round(caught.weight);
+      bag.fish.push({ name: caught.spec.name, size: caught.size, weight: Number(weight), price: caught.price });
+      showBag(); persist();
+      sfx('coin');
+      toast(`The automatic pole lands a ${caught.spec.name}: ${caught.size}, ${weight} kg, worth G$ ${caught.price}. (${bag.fish.length}/${HOLD} in the hold)`);
+      pole.phase = 'hold';
+      pole.timer = 1.6;
+    }
+  } else {                                     // showing the fish off for a moment, then back down
+    wantY = 3.0;
+    pole.timer -= dt;
+    if (pole.fish) pole.fish.rotation.y += dt * 1.5;
+    if (pole.timer <= 0) {
+      dropPoleFish();
+      if (bag.fish.length >= HOLD) { pole.on = false; toast('The hold is full. The automatic pole switches itself off.'); }
+      pole.phase = 'down';
+      pole.timer = 5 + Math.random() * 6;
+    }
+  }
+  const move = THREE.MathUtils.clamp(wantY - pole.hookY, -windSpeed * dt, windSpeed * dt);
+  pole.hookY += move;
+  rig.hook.position.y = pole.hookY;
+  rig.cable.scale.y = Math.max(0.05, rig.tip.y - pole.hookY);
+}
 // Where he has to stand to use things.
 const near = (px, pz, reach) => Math.hypot(player.group.position.x - px, player.group.position.z - pz) < reach;
 const atCounter = () => near(54, 13.2, 3.2) && player.group.position.z > 6.3; // in front of Big Al
@@ -662,6 +833,9 @@ const WAGES = 250, WAGE_WAIT = 60;
 let wagesAt = -WAGE_WAIT;
 function useKey() {
   if (workout) return;
+  if (fishingState) return reelIn();
+  if (fishingSpot()) return castLine();
+  if (atStall()) return sellFish();
   const station = !driving && !boating ? stationNear(gym, player.group.position) : null;
   if (station) return startWorkout(station);
   if (atBed()) return trySleep();
@@ -707,7 +881,7 @@ function toggleDriving() {
   const here = player.group.position, there = truck.group.position;
   // Boats: F gets in when next to one, and out again at the jetty or the bank.
   if (boating) {
-    if (Math.abs(boating.speed) > 4) return; // too fast to get out
+    if (Math.abs(boating.speed) > 4) return toast('Slow down first: press Space to cut the throttle, then F.'); // too fast to get out
     // Onto the jetty or the bank if one is close; otherwise over the side into the water.
     const spot = boating.fishing ? leaveFishingBoat(seaParts) : (boating.jetSki ? seaLanding(seaParts, boating) : landingSpot(lake, boating)) || new THREE.Vector3(
       boating.group.position.x + Math.cos(boating.heading) * 1.5, 0, boating.group.position.z - Math.sin(boating.heading) * 1.5);
@@ -718,6 +892,8 @@ function toggleDriving() {
     here.copy(spot);
     return;
   }
+  const climb = !driving && waterDepthAt(here) > 0 ? climbAboardSpot(seaParts, here) : null; // swimming beside the fishing boat
+  if (climb) { here.copy(climb); sfx('splash'); return; }
   const boat = !driving && player.downTime < 0 ? boatNear(lake, here) || jetSkiNear(seaParts, here) || fishingBoatNear(seaParts, here) : null;
   if (boat) {
     boating = boat;
@@ -793,6 +969,7 @@ window.addEventListener('keydown', (e) => {
       else toast("You don't own a gun yet. Big Al's Guns is across the road from the petrol station.");
     }
   }
+  if (e.code === 'KeyT' && !e.repeat) toggleAutoPole(); // the fishing boat's automatic pole
   if (e.code === 'KeyR' && !e.repeat) { // put the view back to normal
     cam.pitch = 0.18;
     cam.distance = 3.6;
@@ -1082,7 +1259,12 @@ function step(dt) {
   updateLake(lake, time, dt, boating, { throttle: testView.has('sail') ? 1 : input.z, steer: testView.has('sail') ? 0.25 : -input.x, cut: input.jump });
   updateJetSkis(seaParts, time, dt, boating, { throttle: testView.has('ski') ? 1 : input.z, steer: testView.has('ski') ? 0.12 : -input.x, brake: input.jump });
   updateFishingBoat(seaParts, time, dt, boating, { throttle: testView.has('trawl') ? 1 : input.z, steer: testView.has('trawl') ? 0.3 : -input.x, cut: input.jump });
-  if (testView.has('trawl') && !boating && player.bones) { boating = seaParts.fishing; castOff(seaParts); } // ?trawl starts at the fishing boat's wheel, under way
+  if (testView.has('anchor') && boating?.fishing && boating.group.position.x > seaParts.shoreX + 150) { // ?trawl&anchor: sail out, then leave the wheel
+    boating.speed = 0;
+    toggleDriving();
+    step.anchored = true;
+  }
+  if (testView.has('trawl') && !boating && !step.anchored && player.bones) { boating = seaParts.fishing; castOff(seaParts); } // ?trawl starts at the fishing boat's wheel, under way
   if (testView.has('ski') && !boating && player.bones) boating = seaParts.skis[0]; // ?ski starts on a jet ski at full throttle
   if (boating) {
     // He stands in the boat, which carries him (and the camera) along.
@@ -1171,6 +1353,8 @@ function step(dt) {
   healOverTime(dt);
   if (testView.has('bleed') && player.bones && Math.floor(gameTime / 1.5) !== Math.floor((gameTime - dt) / 1.5)) hurtPlayer(8); // ?bleed: take a hit every so often, to check the blood
   updateBlood(dt);
+  updateFishing(dt, time);
+  updateAutoPole(dt);
   updatePoliceStation(policeStation, player.group.position, dt);
   updateGym(gym, player.group.position, dt, time);
   const byTruck = !driving && Math.hypot(player.group.position.x - truck.group.position.x, player.group.position.z - truck.group.position.z) < 3.4;
@@ -1221,6 +1405,16 @@ function step(dt) {
   usePrompt.textContent = canLand ? (boating.fishing ? 'Press F to leave the wheel' : 'Press F to get out') : byBoat ? (fishingBoatNear(seaParts, player.group.position) ? 'Press F to take the wheel' : jetSkiNear(seaParts, player.group.position) ? 'Press F to ride the jet ski' : 'Press F to take the boat out') : byTruck ? 'Press F to drive the truck'
     : byBed ? (isNight() ? 'Press E to sleep until morning' : 'You can sleep here once it gets dark (6 in the evening)') : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to collect your wages' : 'Press E to open or close the fridge';
   usePrompt.style.display = ((byTruck && !boating) || byFridge || byBoat || canLand || byCash || byAl || byMart || gymSpot || byBed) && !shopOpen && !martOpen ? 'block' : 'none';
+  const fishPrompt = fishingState?.phase === 'bite' ? 'A BITE! Press E now!'
+    : fishingState?.phase === 'wait' ? 'Waiting for a bite… (press E to reel in)'
+    : fishingState ? ''
+    : fishingSpot() ? `Press E to cast your line${boating ? ' · F to leave the wheel' : ''}`
+    : atStall() ? (bag.fish.length ? `Press E to sell your ${bag.fish.length} fish for G$ ${holdValue().toLocaleString('en-US')}` : 'Fish stall: bring your catch here to sell it') : '';
+  // Aboard the fishing boat, the prompt always says how to work the automatic pole.
+  const poleHint = aboardBoat() ? `T: automatic fishing pole (now ${pole.on ? 'ON' : 'OFF'})` : '';
+  const climbHint = !boating && !driving && waterDepthAt(player.group.position) > 0 && climbAboardSpot(seaParts, player.group.position) ? 'Press F to climb aboard the fishing boat' : '';
+  const boatPrompt = [climbHint, fishPrompt, poleHint].filter(Boolean).join(' · ');
+  if (boatPrompt) { usePrompt.textContent = boatPrompt; usePrompt.style.display = 'block'; }
   updateGun(gun, player, dt);
   if (workout && player.bones) {
     const { station } = workout;

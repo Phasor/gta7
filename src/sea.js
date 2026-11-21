@@ -407,7 +407,8 @@ function addFishingBoat(group, bx, bz) {
   }, 0.5, 0.2) });
   const put = (material, w, h, d, x, y, z) => block(boat, material, w, h, d, x, DECK + y, z); // y: height above the deck
   const solids = []; // everything solid aboard, so it can all be switched off while she is under way
-  const solid = (x, z, w, d, height) => solids.push(addObstacle(bx + x - w / 2, bx + x + w / 2, bz + z - d / 2, bz + z + d / 2, DECK + height));
+  // Each is remembered by where it sits on the boat, so it can be put back wherever she comes to rest.
+  const solid = (x, z, w, d, height) => solids.push({ x, z, w, d, height: DECK + height, box: addObstacle(bx + x - w / 2, bx + x + w / 2, bz + z - d / 2, bz + z + d / 2, DECK + height) });
   const thing = (material, w, h, d, x, z) => { solid(x, z, w, d, h); return put(material, w, h, d, x, h / 2, z); };
 
   // Hull: flat stern, straight sides, and a pointed bow. White above a blue waterline.
@@ -477,10 +478,28 @@ function addFishingBoat(group, bx, bz) {
   put(steel, 0.1, 3.0, 0.1, 0, H + 1.6, zBack + 0.5);
   put(new THREE.MeshBasicMaterial({ color: 0xfff3cf }), 0.16, 0.16, 0.16, 0, H + 3.15, zBack + 0.5);
   put(white, 1.3, 0.1, 0.16, 0, H + 0.45, zFront - 0.8);
-  const boom = put(steel, 0.09, 0.09, 5.2, 0, H + 1.9, zBack - 1.9);
-  boom.rotation.x = 0.22;
-  put(steel, 0.02, 1.4, 0.02, 0, H + 1.75, zBack - 4.3);       // cable
-  put(rust, 0.14, 0.2, 0.14, 0, H + 0.95, zBack - 4.3);         // hook
+  // The big automatic fishing pole: a long boom reaching out past the stern, with a
+  // cable and hook that it lowers into the sea and winds back up by itself.
+  const boomLength = 9.6, boomTilt = 0.22;
+  const boom = put(steel, 0.12, 0.12, boomLength, 0, H + 1.9, zBack - 4.4);
+  boom.rotation.x = boomTilt;
+  put(steel, 0.07, 1.5, 0.07, 0, H + 1.15, zBack - 1.2).rotation.x = -0.5;   // strut holding it up
+  const tip = new THREE.Vector3(0, DECK + H + 1.9 + Math.sin(boomTilt) * boomLength / 2, zBack - 4.4 - Math.cos(boomTilt) * boomLength / 2);
+  const pulley = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.08, 14), rust);
+  pulley.rotation.z = Math.PI / 2;
+  pulley.position.copy(tip);
+  const cableShape = new THREE.BoxGeometry(0.03, 1, 0.03);
+  cableShape.translate(0, -0.5, 0); // hangs down from its top end
+  const cable = new THREE.Mesh(cableShape, dark);
+  cable.position.copy(tip);
+  const hook = new THREE.Group();
+  hook.position.copy(tip);
+  block(hook, rust, 0.16, 0.22, 0.16, 0, 0, 0);
+  const curl = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.022, 6, 12, Math.PI * 1.4), steel);
+  curl.position.y = -0.17;
+  hook.add(curl);
+  boat.add(pulley, cable, hook);
+  const rig = { tip, cable, hook, stowed: DECK + H + 0.9 };
 
   // Working deck: a heap of net with floats, crates of fish, a winch, a cool box, rods and rope.
   const net = new THREE.Mesh(new THREE.IcosahedronGeometry(0.9, 1), plain(0x3f7a5a, 1, { flatShading: true }));
@@ -541,7 +560,10 @@ function addFishingBoat(group, bx, bz) {
   wake.scale.set(2.4, 1, 2.2);
   group.add(wake);
   return {
-    box, group: boat, wake, solids, floor, dock, interior, berth: { x: bx, z: bz }, helm: { x: 0, z: zFront - 1.5 },
+    box, group: boat, wake, rig, solids, floor, dock, interior, berth: { x: bx, z: bz }, helm: { x: 0, z: zFront - 1.5 },
+    // The same areas measured on the boat herself: [min x, max x, min z, max z].
+    hullArea: [-2.5, 2.5, -7, 7.5], floorArea: [-2.9, 2.5, -7, 7.5], dockArea: [-3.1, 2.5, -7, 7.5],
+    cabinArea: [-x0 + 0.1, x0 - 0.1, zBack + 0.1, zFront - 0.1],
     moored: true, heading: 0, speed: 0, steer: 0, throttle: 0, phase: 0, engine: null,
     fishing: true, stand: true, seat: { back: zFront - 1.5, height: DECK + 0.4 }, // he stands at the wheel
   };
@@ -553,43 +575,71 @@ function addFishingBoat(group, bx, bz) {
 
 const BOAT_TOP_SPEED = 14; // metres per second, about 30 mph
 
-// The fishing boat, if `position` is somewhere he could take her wheel from: standing
-// at the wheel while she is tied up, or in the water beside her when she is adrift.
-export function fishingBoatNear(seaParts, position) {
-  const f = seaParts.fishing, at = f.group.position;
-  if (f.moored) return Math.hypot(position.x - (at.x + f.helm.x), position.z - (at.z + f.helm.z)) < 1.5 && position.y > 0.5 ? f : null;
-  return Math.hypot(position.x - at.x, position.z - at.z) < 8 ? f : null;
+// A spot on the boat (measured from her middle, bow toward +z) as a place on the map.
+export function onBoat(f, x, z, y = DECK) {
+  const c = Math.cos(f.heading), s = Math.sin(f.heading), at = f.group.position;
+  return new THREE.Vector3(at.x + x * c + z * s, y, at.z - x * s + z * c);
 }
 
-// Let go the ropes: everything aboard stops being solid so she can move.
+// Make the boat solid where she lies: put her walls, deck and cabin back in the world
+// at her present position. (She is always square to the map when at rest.)
+function settle(f) {
+  const area = ([x0, x1, z0, z1]) => {
+    const a = onBoat(f, x0, z0), b = onBoat(f, x1, z1);
+    return { minX: Math.min(a.x, b.x), maxX: Math.max(a.x, b.x), minZ: Math.min(a.z, b.z), maxZ: Math.max(a.z, b.z) };
+  };
+  for (const o of f.solids) Object.assign(o.box, area([o.x - o.w / 2, o.x + o.w / 2, o.z - o.d / 2, o.z + o.d / 2]), { height: o.height });
+  Object.assign(f.box, area(f.hullArea));
+  Object.assign(f.floor, area(f.floorArea), { height: DECK });
+  Object.assign(f.dock, area(f.dockArea));
+  Object.assign(f.interior, area(f.cabinArea));
+}
+
+// The fishing boat, if he is standing at her wheel (while she is at rest), ready to take it.
+export function fishingBoatNear(seaParts, position) {
+  const f = seaParts.fishing;
+  if (!f.moored || position.y < 0.5) return null;
+  const wheel = onBoat(f, f.helm.x, f.helm.z);
+  return Math.hypot(position.x - wheel.x, position.z - wheel.z) < 1.5 ? f : null;
+}
+
+// Where someone swimming beside the boat would climb aboard, or null if he isn't beside her.
+export function climbAboardSpot(seaParts, position) {
+  const f = seaParts.fishing, box = f.box;
+  if (!f.moored || position.y > 0.4) return null;
+  if (position.x < box.minX - 3.5 || position.x > box.maxX + 3.5 || position.z < box.minZ - 3.5 || position.z > box.maxZ + 3.5) return null;
+  return onBoat(f, 0, -4.1);
+}
+
+// Let go: everything aboard stops being solid so she can move.
 export function castOff(seaParts) {
   const f = seaParts.fishing;
   if (!f.moored) return;
   f.moored = false;
-  for (const o of f.solids) { o.saved = o.height; o.height = -Infinity; }
-  f.floor.saved = f.floor.height; f.floor.height = 0;
-  for (const area of [f.dock, f.interior]) { area.saved = area.maxX; area.maxX = area.minX - 1; }
+  for (const o of f.solids) o.box.height = -Infinity;
+  f.floor.height = 0;
+  for (const area of [f.dock, f.interior]) area.maxX = area.minX - 1;
 }
 
-// He lets go of the wheel. Close to the pier she is tied up again and he steps away
-// from the wheel on deck; anywhere else he goes over the side and she is left adrift.
-// Returns where he ends up.
+// He lets go of the wheel. Close to the pier she goes back into her berth. Anywhere
+// else she drops anchor on the spot, swinging round to lie square, so he can walk
+// about on deck out at sea. Returns where he ends up standing.
 export function leaveFishingBoat(seaParts) {
   const f = seaParts.fishing, at = f.group.position;
   f.throttle = 0;
+  f.speed = 0;
   if (Math.hypot(at.x - f.berth.x, at.z - f.berth.z) < 16) {
-    f.moored = true;
+    at.set(f.berth.x, 0, f.berth.z);
     f.heading = 0;
-    f.group.position.set(f.berth.x, 0, f.berth.z);
-    f.group.rotation.set(0, 0, 0);
-    for (const o of f.solids) o.height = o.saved;
-    f.floor.height = f.floor.saved;
-    for (const area of [f.dock, f.interior]) area.maxX = area.saved;
-    return new THREE.Vector3(f.berth.x + f.helm.x, DECK, f.berth.z + f.helm.z - 0.9);
+  } else {
+    at.y = 0;
+    f.heading = Math.round(f.heading / (Math.PI / 2)) * (Math.PI / 2);
   }
-  return new THREE.Vector3(at.x + Math.cos(f.heading) * 4, 0, at.z - Math.sin(f.heading) * 4);
+  f.group.rotation.set(0, f.heading, 0);
+  f.moored = true;
+  settle(f);
+  return onBoat(f, f.helm.x, f.helm.z - 0.9);
 }
-
 // input: { throttle: -1..1 (moves the throttle lever), steer: -1 (right) .. 1 (left), cut: back to idle }.
 export function updateFishingBoat(seaParts, time, dt, ridden, input) {
   const f = seaParts.fishing, position = f.group.position, { shoreX, pier } = seaParts;
