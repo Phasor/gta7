@@ -6,7 +6,7 @@ import { addObstacle, addFloor } from './world.js';
 import { clearings } from './grass.js';
 import { block, canvasTexture, speckle } from './house.js';
 
-const LENGTH = 1200;   // the street runs the whole way across the map, along X
+const LENGTH = 1900;   // the street runs the whole way across the map, along X, out to the city
 const KERB = 0.13;     // how high the pavement stands above the road
 
 // nearZ: the edge of the street nearest the buildings. The street is 9 m wide in

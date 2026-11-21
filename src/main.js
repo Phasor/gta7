@@ -10,6 +10,8 @@ import { createRoad } from './road.js';
 import { createGasStation, updateGasStation } from './gasstation.js';
 import { createNeighbourhood } from './neighbourhood.js';
 import { createGunShop, updateGunShop } from './gunshop.js';
+import { createCity, updateCity } from './city.js';
+import { createPoliceStation, updatePoliceStation } from './policestation.js';
 import { createGym, updateGym, stationNear, TRAINING } from './gym.js';
 import { createLake, updateLake, boatNear, landingSpot, SEAT } from './lake.js';
 import { createAlligators, updateAlligators } from './alligator.js';
@@ -18,7 +20,7 @@ import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke } from './gun.js';
 import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, playStrike, debug as npcDebug } from './npc.js';
 
-const MAP_SIZE = 600;     // playable area, metres along each side
+const MAP_SIZE = 1900;    // playable area, metres along each side (big enough to reach the city)
 const GROUND_SIZE = 2400; // the grass carries on past the edge so the horizon looks endless
 
 // --- Renderer ---------------------------------------------------------------
@@ -31,7 +33,7 @@ document.body.appendChild(renderer.domElement);
 
 // --- Scene ------------------------------------------------------------------
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(PALETTE.skyHorizon, 120, 700); // distance fades into the horizon haze
+scene.fog = new THREE.Fog(PALETTE.skyHorizon, 260, 1500); // distance fades into the horizon haze, but the city skyline still shows
 
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
 
@@ -113,8 +115,14 @@ const gasStation = createGasStation(scene, 54, -19);
 // Ten more houses along the street, all different.
 createNeighbourhood(scene);
 
+// Palm City: ten Miami-style buildings about half a minute's drive along the road.
+const city = createCity(scene, 640);
+
 // The gun shop, across the road from the petrol station.
 const gunShop = createGunShop(scene, 54, 11, 0);
+
+// The police station, at the far end of the street past the gym.
+const policeStation = createPoliceStation(scene, 112, -23, -9);
 
 // --- Money and shopping ---------------------------------------------------------
 // The money is called Gator Bucks (G$). He starts with some, earns wages from the
@@ -128,7 +136,7 @@ const saved = (() => { try { return JSON.parse(localStorage.getItem('gta7-save')
 let money = saved.money ?? 1500;
 const owned = new Set(saved.owned || []);
 if (new URLSearchParams(location.search).has('gun')) owned.add('pistol'); // test views start armed
-const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day })); } catch { /* no storage */ } };
+const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests })); } catch { /* no storage */ } };
 
 const overlay = (css) => { const el = document.createElement('div'); el.style.cssText = `position:fixed;pointer-events:none;font-family:system-ui,sans-serif;${css}`; document.body.appendChild(el); return el; };
 const moneyEl = overlay('right:18px;top:14px;font-weight:bold;font-size:24px;color:#d8f0c0;background:rgba(30,45,25,0.7);padding:6px 14px;border-radius:8px');
@@ -420,6 +428,70 @@ function unhealthy() {
   showStats();
   return ` That was unhealthy: your ${best[0].toUpperCase() + best.slice(1)} drops to ${stats[best]}/${MAX_STAT}.`;
 }
+// --- Crime and punishment -----------------------------------------------------------------
+// Hurting or killing someone is a crime. The police then chase him until they catch
+// him or lose him. Caught, he pays a fine and spends a while locked in a holding cell.
+const WANTED_TIME = 45, FINE = 100;
+// Each arrest means longer inside: 1 minute the first time, then 2, 3, 4, and 5 minutes from the fifth arrest on.
+let arrests = saved.arrests ?? 0;
+const jailMinutes = () => Math.min(5, arrests);
+let wanted = 0;  // seconds until the police give up, or 0 if he is not wanted
+let jailed = 0;  // seconds left in the cell
+let arresting = false;
+const wantedEl = overlay('display:none;left:18px;top:54px;font-weight:bold;font-size:18px;color:#fff3e0;background:rgba(160,25,15,0.85);padding:5px 14px;border-radius:8px');
+function commitCrime() {
+  if (jailed > 0 || arresting) return;
+  if (wanted <= 0) toast('That is a crime! The police are coming for you.');
+  wanted = WANTED_TIME;
+}
+function arrest() {
+  if (arresting || jailed > 0) return;
+  arresting = true;
+  fadeEl.style.opacity = 1;
+  setTimeout(() => {
+    if (driving) { // hauled out of the truck
+      driving = false;
+      setEngine(truck, false);
+      truck.speed = 0;
+      player.group.visible = true;
+    }
+    gun.equipped = false;
+    const fine = Math.min(money, FINE);
+    money -= fine;
+    showMoney();
+    wanted = 0;
+    arrests++;
+    jailed = jailMinutes() * 60;
+    arresting = false;
+    player.group.position.copy(policeStation.userData.cell);
+    player.group.rotation.y = 0;
+    cam.yaw = Math.PI;
+    fadeEl.style.opacity = 0;
+    persist();
+    toast(`Arrested! You are fined G$ ${fine} and locked in the cells for ${jailMinutes()} minute${jailMinutes() > 1 ? 's' : ''}. This is arrest number ${arrests}.`);
+  }, 1100);
+}
+function updatePolice(dt) {
+  if (testView.has('wanted') && wanted <= 0 && jailed <= 0 && !arresting && !updatePolice.done) { updatePolice.done = true; commitCrime(); } // ?wanted starts a chase
+  if (testView.has('jail') && !updatePolice.done) { updatePolice.done = true; jailed = 999; player.group.position.copy(policeStation.userData.cell); }
+  if (wanted > 0) {
+    // The search only winds down while no officer is close.
+    const close = (npcs.officers || []).some((cop) => near(cop.group.position.x, cop.group.position.z, 25));
+    if (!close) wanted -= dt;
+    if (wanted <= 0) { wanted = 0; toast('The police have lost you.'); }
+  }
+  if (jailed > 0) {
+    jailed -= dt;
+    if (jailed <= 0) {
+      jailed = 0;
+      player.group.position.copy(policeStation.userData.release);
+      cam.yaw = 0;
+      toast('You are released. Stay out of trouble.');
+    }
+  }
+  wantedEl.style.display = wanted > 0 || jailed > 0 ? 'block' : 'none';
+  wantedEl.textContent = jailed > 0 ? `IN THE CELLS · released in ${Math.floor(Math.ceil(jailed) / 60)}:${String(Math.ceil(jailed) % 60).padStart(2, '0')}` : 'WANTED';
+}
 // Where he has to stand to use things.
 const near = (px, pz, reach) => Math.hypot(player.group.position.x - px, player.group.position.z - pz) < reach;
 const atCounter = () => near(54, 13.2, 3.2) && player.group.position.z > 6.3; // in front of Big Al
@@ -663,7 +735,9 @@ const aimDir = new THREE.Vector3(), aimPoint = new THREE.Vector3();
 const npcs = createNpcs(scene, MAP_SIZE / 2, testView.has('npc') ? new THREE.Vector3(0.75, 0, -5) : null, testView.has('man') ? 'man' : 'woman',
   [{ x: 20.65, z: -22.1, facing: Math.PI / 2 },   // the cashier behind the counter in Sunny's Mart
    { x: 51.0, z: -26.6, facing: Math.PI / 2 },     // the one in the Gator Gas kiosk
-   gunShop.userData.cashier]);                       // and Big Al, behind the gun shop counter
+   gunShop.userData.cashier,
+   policeStation.userData.officer],
+  policeStation.userData.posts);                // and the officer at the police station's front desk                       // and Big Al, behind the gun shop counter
 if (testView.has('npcpace')) npcDebug.pace = Number(testView.get('npcpace')); // hold NPCs in walk (1) or run (2)
 let hitFlash = 0; // the crosshair turns red for a moment when a shot hits someone
 
@@ -744,6 +818,7 @@ function step(dt) {
         const knockedOut = hitNpc(target, at, PUNCHES[punchHand].damage * (1 + 0.15 * stats.strength)); // Strength: harder punches
         playStrike('punch');
         if (knockedOut) dropCash(target.group.position);
+        commitCrime();
         if (testView.has('npc')) console.log(knockedOut ? 'TEST punch knocked out' : 'TEST punch landed on npc');
       }
     }
@@ -814,6 +889,7 @@ function step(dt) {
       if (testView.get('npc') === 'kill') killed = hitNpc(struck.npc, player.group.position) || killed;
       hitFlash = 0.15;
       if (killed) dropCash(struck.npc.group.position);
+      commitCrime();
       if (testView.has('npc')) console.log(killed ? 'TEST npc killed' : 'TEST npc hit');
     }
   }
@@ -864,7 +940,10 @@ function step(dt) {
         const ahead = Math.sign(truck.speed) * 1.6;
         const dx = npc.group.position.x - (truck.group.position.x + Math.sin(truck.heading) * ahead);
         const dz = npc.group.position.z - (truck.group.position.z + Math.cos(truck.heading) * ahead);
-        if (Math.hypot(dx, dz) < 1.5) for (let blow = 0; blow < 3; blow++) hitNpc(npc, truck.group.position);
+        if (Math.hypot(dx, dz) < 1.5) {
+          for (let blow = 0; blow < 3; blow++) hitNpc(npc, truck.group.position);
+          commitCrime();
+        }
       }
     }
   } else {
@@ -908,6 +987,8 @@ function step(dt) {
   updateStore(store, player.group.position, dt);
   updateGasStation(gasStation, player.group.position, dt);
   updateGunShop(gunShop, player.group.position, dt);
+  updateCity(city, player.group.position, dt);
+  updatePoliceStation(policeStation, player.group.position, dt);
   updateGym(gym, player.group.position, dt, time);
   const byTruck = !driving && Math.hypot(player.group.position.x - truck.group.position.x, player.group.position.z - truck.group.position.z) < 3.4;
   const byFridge = !driving && !boating && nearFridge(house, player.group.position);
@@ -975,7 +1056,12 @@ function step(dt) {
     }
   }
   if (driving || boating) gun.mesh.visible = false;
-  updateNpcs(npcs, player.group.position, dt, onStrike);
+  updatePolice(dt);
+  updateNpcs(npcs, player.group.position, dt, onStrike, {
+    wanted: wanted > 0 && !arresting,
+    canCatch: !boating && (!driving || Math.abs(truck.speed) < 3), // a moving truck or a boat can't be stopped on foot
+    onArrest: arrest,
+  });
   updateCamera();
   if (tipsy > 0) camera.rotateZ(Math.sin(time * 1.3) * 0.07 * Math.min(1, tipsy / 5)); // wobbly after a beer
   updateGrass(grass, player.group.position, time);

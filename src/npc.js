@@ -138,7 +138,9 @@ function wander(npc, near, far) {
 // testKind: 'man' or 'woman', which of them that first NPC should be.
 // cashierSpots: a list of { x, z, facing }, each of which gets a shopkeeper. They
 // never leave their spot; they just stand at the till and turn their head to watch the player.
-export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots) {
+// officerPosts: a list of { x, z, facing }. Each gets a uniformed police officer who
+// stands guard there, chases the player when he is wanted, and walks back afterwards.
+export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, officerPosts) {
   const npcs = [];
   const loader = new GLTFLoader();
   Promise.all([loadKind(loader, 'woman'), loadKind(loader, 'man')]).then(([woman, man]) => {
@@ -147,7 +149,8 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots) {
     npcs.cashiers = [];
     for (const cashierSpot of cashierSpots || []) {
       const model = cloneSkinned(man.scene);
-      model.traverse((part) => { if (part.isMesh) part.material = recolour(part.material, 330); });
+      if (cashierSpot.uniform) addUniform(model); // the police desk officer
+      else model.traverse((part) => { if (part.isMesh) part.material = recolour(part.material, 330); });
       const group = new THREE.Group();
       group.position.set(cashierSpot.x, 0, cashierSpot.z);
       group.position.y = floorAt(group.position);
@@ -159,6 +162,26 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots) {
       const bones = [model.getObjectByName('Neck'), model.getObjectByName('Head')];
       npcs.cashiers.push({ group, mixer, bones, clean: bones.map((bone) => bone.quaternion.clone()), look: 0 });
       addObstacle(cashierSpot.x - 0.3, cashierSpot.x + 0.3, cashierSpot.z - 0.3, cashierSpot.z + 0.3, 2.1);
+    }
+
+    npcs.officers = [];
+    for (const post of officerPosts || []) {
+      const model = cloneSkinned(man.scene);
+      addUniform(model);
+      const group = new THREE.Group();
+      group.position.set(post.x, 0, post.z);
+      group.rotation.y = post.facing;
+      group.add(model);
+      scene.add(group);
+      const mixer = new THREE.AnimationMixer(model);
+      const actions = {};
+      for (const clip of man.clips) {
+        const action = mixer.clipAction(clip);
+        action.play();
+        action.setEffectiveWeight(clip.name === 'Idle' ? 1 : 0);
+        actions[clip.name] = action;
+      }
+      npcs.officers.push({ group, mixer, actions, post, pace: 0 });
     }
     const people = testKind === 'man' ? [PEOPLE[1], PEOPLE[0], ...PEOPLE.slice(2)] : PEOPLE;
 
@@ -266,7 +289,68 @@ function poseStrike(npc, playerPosition, t) {
 }
 
 // onStrike(kind, npc) is called at the moment a slap or punch lands on the player.
-export function updateNpcs(npcs, playerPosition, dt, onStrike) {
+// A police uniform, added to a copy of the man: peaked cap with a badge, a gold
+// badge on the chest, a shoulder radio, and a duty belt with a holster.
+function addUniform(model) {
+  const navy = new THREE.MeshStandardMaterial({ color: 0x18233f, roughness: 0.7 });
+  const black = new THREE.MeshStandardMaterial({ color: 0x0e0f11, roughness: 0.5 });
+  const gold = new THREE.MeshStandardMaterial({ color: 0xd9b23a, roughness: 0.3, metalness: 0.8 });
+  const wear = (bone, geometry, material, x, y, z) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    model.getObjectByName(bone)?.add(mesh);
+    return mesh;
+  };
+  wear('Head', new THREE.CylinderGeometry(0.112, 0.104, 0.06, 18), navy, 0, 0.185, 0.005);    // cap band
+  wear('Head', new THREE.CylinderGeometry(0.135, 0.114, 0.045, 18), navy, 0, 0.235, 0.0);     // flared crown
+  wear('Head', new THREE.CylinderGeometry(0.115, 0.115, 0.012, 18, 1, false, -1.0, 2.0), black, 0, 0.16, 0.04); // peak
+  wear('Head', new THREE.BoxGeometry(0.04, 0.045, 0.012), gold, 0, 0.2, 0.108);               // cap badge
+  wear('Spine2', new THREE.BoxGeometry(0.05, 0.06, 0.014), gold, 0.085, 0.07, 0.118);         // chest badge
+  wear('Spine2', new THREE.BoxGeometry(0.05, 0.08, 0.035), black, -0.13, 0.13, 0.085);        // shoulder radio
+  wear('Hips', new THREE.BoxGeometry(0.36, 0.06, 0.245), black, 0, 0.07, 0.005);              // duty belt
+  wear('Hips', new THREE.BoxGeometry(0.05, 0.05, 0.012), gold, 0, 0.07, 0.13);                // buckle
+  wear('Hips', new THREE.BoxGeometry(0.06, 0.16, 0.09), black, -0.2, -0.01, 0.01);            // holster
+  wear('Hips', new THREE.BoxGeometry(0.05, 0.07, 0.06), black, 0.19, 0.03, 0.05);             // handcuff pouch
+}
+
+const OFFICER_RUN = 5.6, OFFICER_WALK = 1.5;
+
+// police: { wanted, canCatch, onArrest(officer) }. While `wanted` is true the officers run the player down.
+export function updateNpcs(npcs, playerPosition, dt, onStrike, police) {
+  for (const cop of npcs.officers || []) {
+    const position = cop.group.position;
+    let pace = 0, heading = cop.post.facing;
+    if (police?.wanted) {
+      const dx = playerPosition.x - position.x, dz = playerPosition.z - position.z, distance = Math.hypot(dx, dz) || 1;
+      heading = Math.atan2(dx, dz);
+      if (distance < 1.4 && police.canCatch) police.onArrest(cop);
+      else if (distance > 1.1) {
+        const stride = Math.min(OFFICER_RUN * dt, distance - 1.0);
+        position.x += dx / distance * stride;
+        position.z += dz / distance * stride;
+        pace = 2;
+      }
+    } else {
+      const dx = cop.post.x - position.x, dz = cop.post.z - position.z, distance = Math.hypot(dx, dz);
+      if (distance > 0.3) { // walking back to his post
+        position.x += dx / distance * OFFICER_WALK * dt;
+        position.z += dz / distance * OFFICER_WALK * dt;
+        heading = Math.atan2(dx, dz);
+        pace = 1;
+      }
+    }
+    pushOut(position, 0.35);
+    position.y = floorAt(position);
+    let turn = heading - cop.group.rotation.y;
+    turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+    cop.group.rotation.y += turn * Math.min(1, 10 * dt);
+    cop.pace += (pace - cop.pace) * Math.min(1, 6 * dt);
+    cop.actions.Idle.setEffectiveWeight(Math.max(0, 1 - cop.pace));
+    cop.actions.Walk.setEffectiveWeight(cop.pace <= 1 ? cop.pace : 2 - cop.pace);
+    cop.actions.Run.setEffectiveWeight(Math.max(0, cop.pace - 1));
+    cop.mixer.update(dt);
+  }
   // The cashier: stands still, and his head follows the player round the shop.
   for (const cashier of npcs.cashiers || []) {
     cashier.bones.forEach((bone, i) => bone.quaternion.copy(cashier.clean[i])); // undo last frame's head turn

@@ -25,7 +25,7 @@ const LAYERS = [
 export const pond = new THREE.Vector4();
 // How bright the day is: 1 at noon, low at night. Shared by the grass and the lake.
 export const daylight = { value: 1 };
-export const clearings = Array.from({ length: 40 }, () => new THREE.Vector4());
+export const clearings = Array.from({ length: 48 }, () => new THREE.Vector4());
 
 const SEGMENTS = 4; // pieces per blade: more pieces give a smoother curve
 
@@ -91,7 +91,7 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
       uniform vec3 center;
       uniform vec4 fadeRange;
       uniform float areaSize, tallness, time;
-      uniform vec4 clearings[40];
+      uniform vec4 clearings[48];
       uniform vec4 pond;
       attribute vec2 spot;
       attribute vec4 rnd;
@@ -145,7 +145,7 @@ function createLayer({ size, blades, width, height, fade }, sunDirection, fog) {
         }
 
         // Nothing grows where something has been built.
-        for (int i = 0; i < 40; i++) {
+        for (int i = 0; i < 48; i++) {
           vec4 c = clearings[i];
           if (ground.x > c.x && ground.x < c.z && ground.y > c.y && ground.y < c.w) tall = 0.0;
         }
