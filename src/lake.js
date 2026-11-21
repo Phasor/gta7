@@ -9,7 +9,7 @@ import { label } from './store.js';
 
 const WATER_LEVEL = 0.035;
 const DECK = 0.45;            // height of the jetty's deck
-const BOAT_TOP_SPEED = 10;    // metres per second
+const BOAT_TOP_SPEED = 50;    // metres per second at full throttle (about 110 mph)
 
 // The lake's outline: a wobbly circle, so it doesn't look drawn with a compass.
 function outline(scale, steps = 96) {
@@ -345,21 +345,23 @@ export function createLake(scene, x, z, radius, fog, sunDirection, roadEdgeZ) {
   return { group: lake, surface, boats, dock: { x, startZ, endZ } };
 }
 
-// input: { throttle: -1..1, steer: -1 (right) .. 1 (left) }, or null for a boat nobody is in.
+// input: { throttle: -1..1 (moves the throttle lever), steer: -1 (right) .. 1 (left), cut: back to idle }.
 export function updateLake(lake, time, dt, riddenBoat, input) {
   lake.surface.material.uniforms.time.value = time;
   for (const boat of lake.boats) {
     const position = boat.group.position;
     if (boat === riddenBoat) {
-      if (input.throttle > 0) boat.speed += 4.5 * (1 - boat.speed / BOAT_TOP_SPEED) * dt;
-      else if (input.throttle < 0) boat.speed -= (boat.speed > 0.3 ? 6 : 2) * dt;
+      // The throttle is a lever: W pushes it forward, S pulls it back (past zero into
+      // reverse), and it stays where you leave it. Space snaps it back to idle.
+      boat.throttle = THREE.MathUtils.clamp((boat.throttle || 0) + input.throttle * 0.35 * dt, -0.12, 1);
+      if (input.cut) boat.throttle = 0;
       boat.steer += (input.steer - boat.steer) * Math.min(1, 4 * dt);
       boat.heading += boat.steer * 1.3 * THREE.MathUtils.clamp(boat.speed / 4, -1, 1) * dt; // only turns while moving
     } else {
       boat.steer *= 1 - Math.min(1, 3 * dt);
     }
-    boat.speed -= boat.speed * 0.7 * dt; // water drag
-    boat.speed = Math.max(boat.speed, -2.5);
+    const power = boat === riddenBoat ? boat.throttle : 0;
+    boat.speed += (power * BOAT_TOP_SPEED - boat.speed) * Math.min(1, 0.8 * dt); // settles at the speed the throttle is set to
     position.x += Math.sin(boat.heading) * boat.speed * dt;
     position.z += Math.cos(boat.heading) * boat.speed * dt;
 
@@ -382,15 +384,15 @@ export function updateLake(lake, time, dt, riddenBoat, input) {
     // Bob on the water, lean into turns, and lift the bow at speed.
     position.y = WATER_LEVEL + Math.sin(time * 1.6 + boat.phase) * 0.035;
     boat.group.rotation.y = boat.heading;
-    boat.group.rotation.x = -boat.speed * 0.012 + Math.sin(time * 1.3 + boat.phase) * 0.02;
-    boat.group.rotation.z = Math.sin(time * 1.1 + boat.phase * 2) * 0.03 + boat.steer * boat.speed * 0.03;
+    boat.group.rotation.x = -Math.min(boat.speed, 14) * 0.012 + Math.sin(time * 1.3 + boat.phase) * 0.02;
+    boat.group.rotation.z = Math.sin(time * 1.1 + boat.phase * 2) * 0.03 + boat.steer * Math.min(boat.speed, 10) * 0.03;
     boat.wake.position.set(position.x, WATER_LEVEL + 0.02, position.z);
     boat.wake.rotation.y = boat.heading;
     boat.wake.material.opacity = THREE.MathUtils.clamp((boat.speed - 0.8) / 6, 0, 0.75);
 
     if (boat.engine) { // outboard motor note
       const now = boat.engine.context.currentTime;
-      boat.engine.tone.frequency.setTargetAtTime(70 + Math.abs(boat.speed) * 14, now, 0.1);
+      boat.engine.tone.frequency.setTargetAtTime(70 + Math.abs(boat.speed) * 5, now, 0.1);
     }
   }
 }

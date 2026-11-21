@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { pushOut, floorAt } from './world.js';
+import { pushOut, floorAt, waterDepthAt } from './world.js';
 
 const WALK_SPEED = 2.4;
 const SPRINT_SPEED = 6.5;
@@ -305,7 +305,11 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   if (group.children[0]) group.children[0].position.z = 0.12 * player.down; // rest on the ground, not in it
   const crouching = input.crouch && player.onGround;
   const sprinting = input.sprint && !crouching;
-  const speed = crouching ? CROUCH_SPEED : sprinting ? SPRINT_SPEED : WALK_SPEED;
+  // In the lake: wading slows him down, and once it is deep enough he swims.
+  const depth = waterDepthAt(group.position);
+  player.swim = (player.swim || 0) + ((depth > 0.95 ? 1 : 0) - (player.swim || 0)) * Math.min(1, 4 * dt);
+  const swimming = player.swim > 0.5;
+  const speed = swimming ? (input.sprint ? 3.2 : 2.0) : depth > 0.3 ? 2.0 : crouching ? CROUCH_SPEED : sprinting ? SPRINT_SPEED : WALK_SPEED;
 
   const fx = -Math.sin(cameraYaw), fz = -Math.cos(cameraYaw); // camera forward
   const rx = Math.cos(cameraYaw), rz = -Math.sin(cameraYaw);  // camera right
@@ -334,11 +338,11 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   const limit = halfMap - 1;
   group.position.x = THREE.MathUtils.clamp(group.position.x, -limit, limit);
   group.position.z = THREE.MathUtils.clamp(group.position.z, -limit, limit);
-  pushOut(group.position, 0.35); // can't walk through walls
+  pushOut(group.position, 0.35, true); // can't walk through walls (but can go in the lake)
 
   // Jump: a quick dip of the knees to push off, then up. On the way down the
   // knees bend again to absorb the landing.
-  if (input.jump && player.onGround && player.windUp <= 0) player.windUp = JUMP_WINDUP;
+  if (input.jump && player.onGround && player.windUp <= 0 && !swimming) player.windUp = JUMP_WINDUP;
   if (player.windUp > 0) {
     player.windUp -= dt;
     dip = 0.55 * Math.sin(Math.PI * Math.min(1, 1 - player.windUp / JUMP_WINDUP) * 0.6);
@@ -347,7 +351,11 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
       player.onGround = false;
     }
   }
-  const floor = floorAt(group.position); // the ground, or a raised floor such as inside the house
+  // Swimming: he leans forward into a crawl when moving and treads water upright when still.
+  player.swimTilt = (player.swimTilt || 0) + (player.swim * (moving ? 1 : 0.15) - (player.swimTilt || 0)) * Math.min(1, 3 * dt);
+  group.rotation.x += 1.15 * player.swimTilt;
+  // The ground, a raised floor such as inside the house, or the lake bed (he floats in deep water).
+  const floor = depth > 0 ? -Math.min(depth, 1.25) + player.swimTilt : floorAt(group.position);
   if (player.onGround) {
     group.position.y += (floor - group.position.y) * Math.min(1, 18 * dt); // step up or down
   } else {
@@ -432,6 +440,15 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
     turnBone(b.armR, sideways, -1.1 * lift);
     turnBone(b.armL, forwards, 0.55 * spread);
     turnBone(b.armR, forwards, -0.55 * spread);
+  }
+
+  // Swimming strokes: arms reach forward and pull back in turn.
+  if (player.swim > 0.01) {
+    player.swimTime = (player.swimTime || 0) + dt * (moving ? 5 : 2);
+    sideways.set(1, 0, 0).applyQuaternion(group.quaternion);
+    const reach = player.swim * (0.5 + 2.0 * player.swimTilt);
+    turnBone(b.armL, sideways, -reach + Math.sin(player.swimTime) * 0.8 * player.swim);
+    turnBone(b.armR, sideways, -reach - Math.sin(player.swimTime) * 0.8 * player.swim);
   }
 
   // On the floor and getting up.

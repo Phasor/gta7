@@ -10,7 +10,8 @@ export function addObstacle(minX, maxX, minZ, maxZ, height) {
 
 // If a person of the given radius standing at `position` overlaps anything
 // solid, slide them out the nearest side.
-export function pushOut(position, radius) {
+// canSwim: true for the player, who is allowed to wade and swim into the lake.
+export function pushOut(position, radius, canSwim = false) {
   for (const o of obstacles) {
     if (position.y >= o.height) continue;
     const left = position.x - (o.minX - radius), right = (o.maxX + radius) - position.x;
@@ -23,9 +24,9 @@ export function pushOut(position, radius) {
     else position.z = o.maxZ + radius;
   }
 
-  // Nobody walks or drives into the lake (boats don't use this check): anything
-  // that strays past the bank is put back on it. The jetty is the exception.
-  if (water.active) {
+  // NPCs, animals and the truck stay out of the lake: anything of theirs that
+  // strays past the bank is put back on it. The jetty is the exception.
+  if (water.active && !canSwim) {
     const dx = position.x - water.x, dz = position.z - water.z, dist = Math.hypot(dx, dz) || 1;
     if (dist < water.radius * 1.35) {
       const bank = shoreRadius(Math.atan2(dz, dx)) + radius * 0.5;
@@ -111,4 +112,14 @@ export function roomLimit(position, origin, direction, maxDistance) {
     return Math.max(0, limit);
   }
   return maxDistance;
+}
+
+// How deep the lake is at a spot: 0 on land or on a jetty, getting deeper away from the bank.
+export function waterDepthAt(position) {
+  if (!water.active) return 0;
+  const dx = position.x - water.x, dz = position.z - water.z, dist = Math.hypot(dx, dz);
+  const bank = shoreRadius(Math.atan2(dz, dx));
+  if (dist >= bank) return 0;
+  if (water.docks.some((d) => position.x > d.minX && position.x < d.maxX && position.z > d.minZ && position.z < d.maxZ)) return 0;
+  return Math.min(2, (bank - dist) * 0.3);
 }

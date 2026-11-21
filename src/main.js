@@ -10,8 +10,9 @@ import { createRoad } from './road.js';
 import { createGasStation, updateGasStation } from './gasstation.js';
 import { createNeighbourhood } from './neighbourhood.js';
 import { createLake, updateLake, boatNear, landingSpot, SEAT } from './lake.js';
+import { createAlligators, updateAlligators } from './alligator.js';
 import { createTruck, updateTruck, setEngine } from './truck.js';
-import { rayToObstacle, ceilingAt, roomLimit } from './world.js';
+import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun } from './gun.js';
 import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, debug as npcDebug } from './npc.js';
 
@@ -112,6 +113,18 @@ createNeighbourhood(scene);
 // The lake, at the left-hand end of the street, with boats to take out.
 const lake = createLake(scene, -178, -98, 76, scene.fog, SUN_OFFSET, -9);
 let boating = null; // the boat the player is in, if any
+const alligators = createAlligators(scene);
+let caught = 0; // seconds until he is pulled out after an alligator gets him
+const notice = document.createElement('div');
+notice.textContent = 'An alligator got you!';
+notice.style.cssText = 'display:none;position:fixed;left:50%;top:22%;transform:translateX(-50%);font:bold 30px system-ui,sans-serif;color:#fff3e0;background:rgba(150,25,15,0.8);padding:12px 24px;border-radius:10px;pointer-events:none';
+document.body.appendChild(notice);
+if (new URLSearchParams(location.search).has('gator')) { // ?gator puts one on the road near the lake, to check how it looks
+  alligators[0].state = 'show';
+  alligators[0].group.position.set(-176.5, 0.05, -4.6); // on the road, where grass doesn't hide it
+  alligators[0].group.rotation.y = alligators[0].heading = Number(new URLSearchParams(location.search).get('gator')) || 1.2;
+  alligators[0].group.scale.setScalar(1);
+}
 
 // The pickup truck, parked in the garage facing the door. F gets in and out.
 const truckStart = (new URLSearchParams(location.search).get('truckat') || '-4,-22.6,0').split(',').map(Number); // ?truckat=x,z,heading
@@ -122,8 +135,11 @@ function toggleDriving() {
   const here = player.group.position, there = truck.group.position;
   // Boats: F gets in when next to one, and out again at the jetty or the bank.
   if (boating) {
-    const spot = Math.abs(boating.speed) < 2 ? landingSpot(lake, boating) : null;
-    if (!spot) return;
+    if (Math.abs(boating.speed) > 4) return; // too fast to get out
+    // Onto the jetty or the bank if one is close; otherwise over the side into the water.
+    const spot = landingSpot(lake, boating) || new THREE.Vector3(
+      boating.group.position.x + Math.cos(boating.heading) * 1.5, 0, boating.group.position.z - Math.sin(boating.heading) * 1.5);
+    boating.throttle = 0;
     setEngine(boating, false);
     boating.speed = 0;
     boating = null;
@@ -373,7 +389,7 @@ function step(dt) {
 
   if (testView.has('drive') && !driving && player.bones) toggleDriving(); // ?drive starts at the wheel with the pedal down
   if (testView.has('sail') && !boating && player.bones) { boating = lake.boats[0]; } // ?sail starts in a boat with the throttle open
-  updateLake(lake, time, dt, boating, { throttle: testView.has('sail') ? 1 : input.z, steer: testView.has('sail') ? 0.25 : -input.x });
+  updateLake(lake, time, dt, boating, { throttle: testView.has('sail') ? 1 : input.z, steer: testView.has('sail') ? 0.25 : -input.x, cut: input.jump });
   if (boating) {
     // He stands in the boat, which carries him (and the camera) along.
     // He sits on the stern bench with a hand on the tiller.
@@ -416,12 +432,28 @@ function step(dt) {
   if (driving || boating) speedo.textContent = `${Math.round(Math.abs((boating || truck).speed) * 2.237)} mph`;
   updateHouse(house, player.group.position, dt);
   updateIguanas(iguanas, player.group.position, dt);
+  // Alligators hunt him while he is in the water. When one gets him it surfaces,
+  // the screen flashes red, and a moment later he is hauled out by the jetty.
+  const inWater = !boating && !driving && waterDepthAt(player.group.position) > 0.3;
+  updateAlligators(alligators, player.group.position, dt, time, inWater && caught <= 0, () => {
+    hurt = 1;
+    caught = 2.2;
+    notice.style.display = 'block';
+  });
+  if (caught > 0) {
+    caught -= dt;
+    if (caught <= 0) {
+      player.group.position.set(-178, 0, -12);
+      setTimeout(() => (notice.style.display = 'none'), 2500);
+    }
+  }
   updateStore(store, player.group.position, dt);
   updateGasStation(gasStation, player.group.position, dt);
   const byTruck = !driving && Math.hypot(player.group.position.x - truck.group.position.x, player.group.position.z - truck.group.position.z) < 3.4;
   const byFridge = !driving && !boating && nearFridge(house, player.group.position);
   const byBoat = !driving && !boating && !!boatNear(lake, player.group.position);
-  const canLand = boating && Math.abs(boating.speed) < 2 && !!landingSpot(lake, boating);
+  if (boating) speedo.textContent += ` · throttle ${Math.round((boating.throttle || 0) * 100)}%`;
+  const canLand = boating && Math.abs(boating.speed) < 4;
   usePrompt.textContent = canLand ? 'Press F to get out' : byBoat ? 'Press F to take the boat out' : byTruck ? 'Press F to drive the truck' : 'Press E to open or close the fridge';
   usePrompt.style.display = (byTruck && !boating) || byFridge || byBoat || canLand ? 'block' : 'none';
   updateGun(gun, player, dt);
