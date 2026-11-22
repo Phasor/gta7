@@ -2,8 +2,9 @@
 // through and bullets can't pass. Each one is an upright box.
 export const obstacles = []; // { minX, maxX, minZ, maxZ, height }
 
-export function addObstacle(minX, maxX, minZ, maxZ, height) {
-  const obstacle = { minX, maxX, minZ, maxZ, height };
+// base: how high up it starts (for walls and furniture on an upper floor). Usually the ground.
+export function addObstacle(minX, maxX, minZ, maxZ, height, base = -Infinity) {
+  const obstacle = { minX, maxX, minZ, maxZ, height, base };
   obstacles.push(obstacle);
   return obstacle; // so a door can make itself passable later by setting its height to 0
 }
@@ -13,7 +14,7 @@ export function addObstacle(minX, maxX, minZ, maxZ, height) {
 // canSwim: true for the player, who is allowed to wade and swim into the lake.
 export function pushOut(position, radius, canSwim = false) {
   for (const o of obstacles) {
-    if (position.y >= o.height) continue;
+    if (position.y >= o.height || position.y < o.base) continue; // above it, or on a floor below it
     const left = position.x - (o.minX - radius), right = (o.maxX + radius) - position.x;
     const back = position.z - (o.minZ - radius), front = (o.maxZ + radius) - position.z;
     if (left <= 0 || right <= 0 || back <= 0 || front <= 0) continue; // not touching
@@ -60,7 +61,7 @@ export function rayToObstacle(origin, direction, maxDistance) {
     let enter = 0, exit = nearest;
     const slabs = [
       [origin.x, direction.x, o.minX, o.maxX],
-      [origin.y, direction.y, 0, o.height],
+      [origin.y, direction.y, Math.max(0, o.base), o.height],
       [origin.z, direction.z, o.minZ, o.maxZ],
     ];
     for (const [start, speed, low, high] of slabs) {
@@ -88,21 +89,23 @@ export function addFloor(minX, maxX, minZ, maxZ, height) {
 export function floorAt(position) {
   let height = 0;
   for (const f of floors) {
-    if (position.x > f.minX && position.x < f.maxX && position.z > f.minZ && position.z < f.maxZ) height = Math.max(height, f.height);
+    // Only floors he could step onto from where he is: a rooftop far overhead doesn't count.
+    if (f.height <= position.y + 0.7 && position.x > f.minX && position.x < f.maxX && position.z > f.minZ && position.z < f.maxZ) height = Math.max(height, f.height);
   }
   return height;
 }
 
 // Indoor spaces: while the player is in one, the camera stays under its ceiling.
 const interiors = []; // { minX, maxX, minZ, maxZ, ceiling }
-export function addInterior(minX, maxX, minZ, maxZ, ceiling) {
-  const interior = { minX, maxX, minZ, maxZ, ceiling };
+// floor: the height of the room's floor, for rooms that are upstairs.
+export function addInterior(minX, maxX, minZ, maxZ, ceiling, floor = -Infinity) {
+  const interior = { minX, maxX, minZ, maxZ, ceiling, floor };
   interiors.push(interior);
   return interior;
 }
 export function ceilingAt(position) {
   for (const i of interiors) {
-    if (position.x > i.minX && position.x < i.maxX && position.z > i.minZ && position.z < i.maxZ) return i.ceiling;
+    if (position.y < i.ceiling && position.y > i.floor - 0.6 && position.x > i.minX && position.x < i.maxX && position.z > i.minZ && position.z < i.maxZ) return i.ceiling;
   }
   return Infinity;
 }
@@ -112,7 +115,7 @@ export function ceilingAt(position) {
 // looking in through an open doorway). Returns `maxDistance` when outdoors.
 export function roomLimit(position, origin, direction, maxDistance) {
   for (const i of interiors) {
-    if (!(position.x > i.minX && position.x < i.maxX && position.z > i.minZ && position.z < i.maxZ)) continue;
+    if (!(position.y < i.ceiling && position.y > i.floor - 0.6 && position.x > i.minX && position.x < i.maxX && position.z > i.minZ && position.z < i.maxZ)) continue;
     const margin = 0.2;
     let limit = maxDistance;
     for (const [start, speed, low, high] of [[origin.x, direction.x, i.minX, i.maxX], [origin.z, direction.z, i.minZ, i.maxZ]]) {

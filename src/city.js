@@ -127,6 +127,46 @@ const glowing = (color, strength = 0.35, roughness = 0.6, extra = {}) =>
 
 // --- The lobby inside each building ---------------------------------------------------
 // Measurements are from the middle of the building with its front toward +Z.
+// The numbers round a roulette wheel, in the order they really go, and which of them are red.
+export const WHEEL = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26];
+export const REDS = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
+function wheelFace() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 512;
+  const ctx = canvas.getContext('2d'), step = Math.PI * 2 / 37;
+  ctx.fillStyle = '#6a4a22';
+  ctx.fillRect(0, 0, 512, 512);
+  WHEEL.forEach((number, i) => {
+    ctx.fillStyle = number === 0 ? '#1f8a45' : REDS.has(number) ? '#c9261e' : '#141414';
+    ctx.beginPath();
+    ctx.moveTo(256, 256);
+    ctx.arc(256, 256, 250, i * step, (i + 1) * step);
+    ctx.fill();
+    ctx.save();
+    ctx.translate(256, 256);
+    ctx.rotate((i + 0.5) * step);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 20px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.translate(228, 0);
+    ctx.rotate(Math.PI / 2);
+    ctx.fillText(String(number), 0, 0);
+    ctx.restore();
+  });
+  ctx.strokeStyle = '#d9a83a';
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 37; i++) { ctx.beginPath(); ctx.moveTo(256 + Math.cos(i * step) * 150, 256 + Math.sin(i * step) * 150); ctx.lineTo(256 + Math.cos(i * step) * 250, 256 + Math.sin(i * step) * 250); ctx.stroke(); }
+  ctx.fillStyle = '#7a5526';
+  ctx.beginPath(); ctx.arc(256, 256, 150, 0, Math.PI * 2); ctx.fill();
+  ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.arc(256, 256, 150, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(256, 256, 250, 0, Math.PI * 2); ctx.stroke();
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
 function furnishLobby(tower, spec, solid) {
   const { w, d, kind } = spec;
   const inW = w - 0.7, inD = d - 0.7;
@@ -209,6 +249,54 @@ function furnishLobby(tower, spec, solid) {
     return;
   }
 
+  if (kind === 'casino') {
+    // Casino: rows of slot machines, gaming tables, and a cashier's cage at the back.
+    const lights = [0xffd23a, 0xff5a30, 0x3fe0ff];
+    for (let row = 0; row < 2; row++) for (let i = 0; i < 6; i++) {
+      const sx = -w / 2 + 2.6 + i * 1.15, sz = -d / 5 + row * 3.2;
+      thing(dark, 0.85, 1.7, 0.7, sx, sz);
+      put(new THREE.MeshBasicMaterial({ color: lights[(i + row) % 3] }), 0.62, 0.5, 0.03, sx, 1.25, sz + 0.37);  // lit screen
+      put(gold, 0.87, 0.12, 0.72, sx, 1.76, sz);
+      put(steel, 0.6, 0.06, 0.2, sx, 0.85, sz + 0.42);                                                           // coin tray
+      round(steel, 0.025, 0.45, sx + 0.47, 1.05, sz + 0.2);                                                      // lever
+      round(new THREE.MeshBasicMaterial({ color: 0xe0352b }), 0.05, 0.06, sx + 0.47, 1.3, sz + 0.2);
+    }
+    const felt = glowing(0x1f6a45, 0.35, 1);
+    for (const [tx, tz, wheel] of [[w / 5, -d / 6, true], [w / 5 + 4.2, -d / 6, false], [w / 5 + 2.1, d / 6, false]]) {
+      round(dark, 0.3, 0.8, tx, 0.4, tz);
+      round(dark, 1.25, 0.1, tx, 0.85, tz);
+      round(felt, 1.15, 0.04, tx, 0.92, tz);
+      solid(tx, tz, 2.3, 2.3, 1.0);
+      if (wheel) {                                                                                  // the roulette wheel, which really turns
+        round(gold, 0.47, 0.1, tx, 0.98, tz);
+        const turning = new THREE.Group();
+        turning.position.set(tx, BASE + 1.036, tz);
+        const face = new THREE.Mesh(new THREE.CircleGeometry(0.43, 74), new THREE.MeshBasicMaterial({ map: wheelFace() }));
+        face.rotation.x = -Math.PI / 2;
+        const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.07, 0.09, 12), gold);
+        hub.position.y = 0.045;
+        turning.add(face, hub);
+        const orbit = new THREE.Group();                                                            // carries the ball round
+        orbit.position.copy(turning.position);
+        const ball = new THREE.Mesh(new THREE.SphereGeometry(0.024, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+        ball.position.set(0.34, 0.024, 0);
+        orbit.add(ball);
+        tower.add(turning, orbit);
+        spec.wheel = { turning, orbit, ball };
+      }
+      else for (let c = 0; c < 5; c++) put(cream, 0.09, 0.012, 0.13, tx - 0.5 + c * 0.25, 0.95, tz + 0.3); // cards dealt
+      for (let s = 0; s < 4; s++) round(fabric, 0.2, 0.5, tx + Math.cos(s * 1.57 + 0.8) * 1.7, 0.25, tz + Math.sin(s * 1.57 + 0.8) * 1.7);
+    }
+    thing(dark, 5.4, 1.15, 0.9, 0, back + 1.6);                                                                  // cashier's cage
+    put(gold, 5.5, 0.05, 1.0, 0, 1.18, back + 1.6);
+    for (let bar = -2.6; bar <= 2.61; bar += 0.26) put(gold, 0.035, 1.3, 0.035, bar, 1.85, back + 1.95);
+    put(gold, 5.4, 0.06, 0.06, 0, 2.5, back + 1.95);
+    put(new THREE.MeshBasicMaterial({ map: label('CASHIER', 'CHIPS · PAYOUTS', '#16121c', css(spec.neon), 256, 128) }), 1.8, 0.7, 0.04, 0, 0.6, back + 2.07);
+    put(new THREE.MeshBasicMaterial({ map: label(spec.name, 'GOOD LUCK', '#16121c', css(spec.neon), 1024, 256) }), 6, 1.5, 0.06, 0, 3.0, back + 0.05);
+    for (const side of [-1, 1]) put(neon, 0.05, LOBBY - BASE - 0.4, 0.05, side * (w / 2 - 0.42), (LOBBY - BASE) / 2, back + 0.1);
+    return;
+  }
+
   if (kind === 'bank') {
     // Bank: a long teller counter behind glass, rope barriers for the queue, cash machines, and the vault.
     const counter = w * 0.5;
@@ -244,7 +332,7 @@ function furnishLobby(tower, spec, solid) {
   put(neon, 5.2, 0.05, 0.04, 0, 0.2, back + 2.5);
   put(dark, 0.5, 0.36, 0.05, -1.2, 1.36, back + 1.8);
   round(gold, 0.07, 0.06, 1.4, 1.19, back + 2.2);                                // the bell
-  put(new THREE.MeshBasicMaterial({ map: label(spec.name, kind === 'hotel' ? 'RECEPTION' : kind === 'condo' ? 'RESIDENTS & GUESTS' : 'RECEPTION · ALL VISITORS SIGN IN', '#16121c', css(spec.neon), 1024, 256) }), 5.2, 1.3, 0.06, 0, 3.0, back + 0.05);
+  put(new THREE.MeshBasicMaterial({ map: label(spec.name, kind === 'hospital' ? 'ADMISSIONS · EMERGENCY' : kind === 'hotel' ? 'RECEPTION' : kind === 'condo' ? 'RESIDENTS & GUESTS' : 'RECEPTION · ALL VISITORS SIGN IN', '#16121c', css(spec.neon), 1024, 256) }), 5.2, 1.3, 0.06, 0, 3.0, back + 0.05);
   // Two lifts in the back wall.
   for (const lx of [w / 2 - 3.2, w / 2 - 5.6]) {
     put(steel, 1.9, 2.5, 0.06, lx, 1.25, back + 0.04);
@@ -275,6 +363,18 @@ function furnishLobby(tower, spec, solid) {
   } else if (kind === 'condo') { // a wall of letterboxes
     for (let row = 0; row < 4; row++) for (let col = 0; col < 8; col++) put(steel, 0.04, 0.3, 0.42, w / 2 - 0.42, 1.0 + row * 0.34, -1.6 + col * 0.46);
     put(new THREE.MeshBasicMaterial({ map: label('MAIL', null, '#16121c', '#f2f0e6', 128, 64) }), 0.04, 0.3, 0.8, w / 2 - 0.42, 2.6, 0);
+  } else if (kind === 'hospital') { // rows of waiting-room chairs, a red cross, and a trolley bed
+    for (let row = 0; row < 2; row++) for (let i = 0; i < 5; i++) {
+      const cx = w / 4 - 2 + i * 0.75, cz = d / 5 - 1.5 + row * 1.6;
+      thing(glowing(0x3f7fb5, 0.3, 0.8), 0.6, 0.45, 0.55, cx, cz);
+      put(glowing(0x3f7fb5, 0.3, 0.8), 0.6, 0.5, 0.08, cx, 0.7, cz - 0.24);
+    }
+    const red = new THREE.MeshBasicMaterial({ color: 0xe0352b });
+    put(red, 1.4, 0.45, 0.05, -w / 4, 3.1, back + 0.06);
+    put(red, 0.45, 1.4, 0.05, -w / 4, 3.1, back + 0.06);
+    thing(steel, 0.8, 0.75, 2.0, -w / 2 + 1.6, back + 3.2);      // trolley bed
+    put(cream, 0.76, 0.12, 1.9, -w / 2 + 1.6, 0.82, back + 3.2);
+    put(cream, 0.5, 0.1, 0.4, -w / 2 + 1.6, 0.92, back + 2.5);
   } else {                       // office: security gates before the lifts, and a directory of companies
     for (let g = 0; g < 3; g++) thing(steel, 0.25, 1.0, 1.3, w / 2 - 6.8 + g * 2.2, back + 3.4);
     put(new THREE.MeshBasicMaterial({ map: label('DIRECTORY', 'FLOORS 2 TO 30', '#16121c', css(spec.neon), 256, 128) }), 0.04, 1.2, 2.0, -w / 2 + 0.42, 2.2, back + 3);
@@ -413,7 +513,9 @@ function build(scene, kit, spec, doors) {
     }
     block(tower, neon, tw - 1, 0.14, 0.14, 0, top + 8.9, td * 0.45 + 0.06);
   }
-  if (spec.penthouse) {
+  let home = null;
+  if (spec.home) home = addPenthouse(tower, spec, x, z, sign, top, tw, td); // the player's own place
+  else if (spec.penthouse) {
     block(tower, plain(0x1c2a33, 0.1, { metalness: 0.6 }), tw * 0.6, 3.2, td * 0.6, 0, top + 1.6, 0);
     block(tower, wall, tw * 0.7, 0.3, td * 0.7, 0, top + 3.35, 0);
   }
@@ -459,6 +561,7 @@ function build(scene, kit, spec, doors) {
   addObstacle(x + w / 5 + 2.2, x + w / 5 + 4.6, kerbZ + sign * 0.3 - 0.45, kerbZ + sign * 0.3 + 0.45, 1.1);
   street(plain(0x2a2d30, 0.6), 0.5, 0.95, 0.5, -w / 4 + 1.2, 0.48, -0.5);                       // bin
   addObstacle(x - w / 4 + 0.95, x - w / 4 + 1.45, kerbZ - sign * 0.5 - 0.25, kerbZ - sign * 0.5 + 0.25, 1);
+  return home;
 }
 
 // A strip of neon set into the ground, with a soft pool of light round it.
@@ -472,6 +575,147 @@ function groundLight(scene, glow, w, d, x, z, y = 0.075) {
   scene.add(strip, pool);
 }
 
+// --- The player's penthouse -------------------------------------------------------------------
+// A glass-walled flat on the roof of Aqua Tower, reached by the lift in the lobby:
+// an open living room and kitchen, a bedroom, and a roof terrace with a plunge pool,
+// all looking out over Miami and the sea. Returns the places the game needs to know.
+function addPenthouse(tower, spec, x, z, sign, top, tw, td) {
+  const W = 15.6, D = 11.4, H = 3.2; // the flat itself, in the middle of the roof
+  const put = (material, bw, bh, bd, px, y, pz) => block(tower, material, bw, bh, bd, px, top + y, pz); // y: height above the roof
+  const solid = (lx, lz, bw, bd, height) => addObstacle(x + sign * lx - bw / 2, x + sign * lx + bw / 2, z + sign * lz - bd / 2, z + sign * lz + bd / 2, top + height, top - 0.6);
+  const thing = (material, bw, bh, bd, px, pz) => { solid(px, pz, bw, bd, bh); return put(material, bw, bh, bd, px, bh / 2, pz); };
+  const white = glowing(0xf4f1ea, 0.45, 0.9), dark = glowing(0x26282b, 0.2, 0.5), aqua = glowing(spec.accent, 0.35, 0.6);
+  const steel = glowing(0xb9bcbe, 0.25, 0.3, { metalness: 0.6 }), sofa = glowing(0x3f6f78, 0.3, 1), linen = glowing(0xf2efe6, 0.45, 1);
+  const timber = glowing(0x9a7448, 0.35, 0.6), leaf = glowing(0x4f7a35, 0.3, 1);
+  const pane = new THREE.MeshStandardMaterial({ color: 0xbfe0e6, roughness: 0.05, metalness: 0.2, transparent: true, opacity: 0.16, depthWrite: false });
+  const boards = canvasTexture(128, (ctx, s) => {
+    for (let row = 0; row < 8; row++) {
+      const shade = 170 + Math.random() * 30;
+      ctx.fillStyle = `rgb(${shade},${shade * 0.78},${shade * 0.56})`;
+      ctx.fillRect(0, row * 16, s, 16);
+      ctx.fillStyle = 'rgba(60,40,20,0.45)';
+      ctx.fillRect(0, row * 16, s, 1);
+      ctx.fillRect((row * 53) % s, row * 16, 1, 16);
+    }
+  }, 6, 5);
+  const floorWood = new THREE.MeshStandardMaterial({ map: boards, emissiveMap: boards, emissive: 0xffffff, emissiveIntensity: 0.4, roughness: 0.5 });
+
+  // The whole roof is a terrace: decking, and a glass rail right round the edge.
+  addFloor(x - tw / 2, x + tw / 2, z - td / 2, z + td / 2, top);
+  put(glowing(0xb9b3a6, 0.3, 1), tw - 0.4, 0.04, td - 0.4, 0, 0.0, 0).castShadow = false;
+  for (const [lx, lz, bw, bd] of [[0, td / 2 - 0.15, tw, 0.1], [0, -td / 2 + 0.15, tw, 0.1], [tw / 2 - 0.15, 0, 0.1, td], [-tw / 2 + 0.15, 0, 0.1, td]]) {
+    put(pane, bw, 1.1, bd, lx, 0.55, lz);
+    put(steel, bw + 0.04, 0.06, bd + 0.04, lx, 1.12, lz);
+    solid(lx, lz, bw + 0.2, bd + 0.2, 1.5);
+  }
+
+  // The flat: wooden floor, a solid back wall, and glass on the other three sides.
+  put(floorWood, W - 0.2, 0.06, D - 0.2, 0, 0.04, 0).castShadow = false;
+  put(white, W, H, 0.2, 0, H / 2, -D / 2);                               // back wall
+  solid(0, -D / 2, W, 0.3, H + 0.4);
+  for (const side of [-1, 1]) {                                          // glass side walls
+    put(pane, 0.08, H, D, side * W / 2, H / 2, 0);
+    solid(side * W / 2, 0, 0.3, D, H + 0.4);
+    for (let pz = -D / 2; pz <= D / 2 + 0.01; pz += D / 4) put(steel, 0.12, H, 0.12, side * W / 2, H / 2, pz);
+  }
+  for (const [cx, bw] of [[-(W / 2 + 1) / 2, W / 2 - 1], [(W / 2 + 1) / 2, W / 2 - 1]]) { // glass front, with a doorway out to the terrace
+    put(pane, bw, H, 0.08, cx, H / 2, D / 2);
+    solid(cx, D / 2, bw, 0.3, H + 0.4);
+  }
+  for (let px = -W / 2; px <= W / 2 + 0.01; px += W / 6) if (Math.abs(px) > 0.5) put(steel, 0.12, H, 0.12, px, H / 2, D / 2);
+  for (const side of [-1, 1]) put(steel, 0.12, H, 0.12, side * 1.0, H / 2, D / 2);
+  put(white, W + 1.4, 0.25, D + 1.4, 0, H + 0.12, 0);                    // roof, overhanging for shade
+  put(white, W - 0.2, 0.04, D - 0.2, 0, H - 0.03, 0).castShadow = false; // ceiling
+  for (const [lx, lz] of [[-4, -1], [1, 2], [5.5, 2.5], [-3, -4]]) put(new THREE.MeshBasicMaterial({ color: 0xfff3d6 }), 0.5, 0.03, 0.5, lx, H - 0.06, lz);
+  const lamp = new THREE.PointLight(0xfff0dc, 14, 16, 1.5);
+  lamp.position.set(0, top + H - 0.6, 0);
+  tower.add(lamp);
+  addInterior(x - W / 2 + 0.25, x + W / 2 - 0.25, z - D / 2 + 0.25, z + D / 2 - 0.25, top + H, top);
+
+  // The lift, in the back wall.
+  const liftX = 5.9;
+  put(steel, 1.7, 2.3, 0.06, liftX, 1.15, -D / 2 + 0.12);
+  put(dark, 0.03, 2.3, 0.07, liftX, 1.15, -D / 2 + 0.14);
+  put(aqua, 1.9, 0.1, 0.1, liftX, 2.36, -D / 2 + 0.13);
+  put(new THREE.MeshBasicMaterial({ color: 0xff9a30 }), 0.12, 0.12, 0.03, liftX - 1.05, 1.25, -D / 2 + 0.12);
+  put(new THREE.MeshBasicMaterial({ map: label('LIFT', 'TO LOBBY', '#16121c', '#f2f0e6', 128, 64) }), 0.8, 0.4, 0.03, liftX, 2.75, -D / 2 + 0.12);
+
+  // Kitchen along the back wall: fridge, worktop with a hob and sink, and an island with stools.
+  thing(steel, 0.9, 2.0, 0.75, -7.1, -5.1);
+  thing(white, 4.6, 0.9, 0.65, -4.2, -5.2);
+  put(dark, 4.7, 0.05, 0.7, -4.2, 0.925, -5.2);
+  put(dark, 0.7, 0.02, 0.5, -5.2, 0.96, -5.2);
+  put(steel, 0.6, 0.02, 0.4, -3.4, 0.96, -5.2);
+  put(white, 4.6, 0.7, 0.35, -4.2, 2.0, -5.4);
+  thing(white, 2.6, 0.92, 0.9, -4.2, -3.0);
+  put(dark, 2.8, 0.05, 1.0, -4.2, 0.945, -3.0);
+  for (const sx of [-5.0, -4.2, -3.4]) { put(steel, 0.05, 0.7, 0.05, sx, 0.35, -2.2); put(dark, 0.34, 0.06, 0.34, sx, 0.72, -2.2); }
+
+  // Living room: a corner sofa facing the view, a rug and table, and a big TV.
+  put(aqua, 4.6, 0.02, 3.2, -3.2, 0.08, 2.0).castShadow = false;
+  thing(sofa, 3.4, 0.45, 1.0, -3.2, 0.3);
+  put(sofa, 3.4, 0.5, 0.28, -3.2, 0.72, -0.08);
+  thing(sofa, 1.0, 0.45, 2.2, -5.4, 1.4);
+  put(sofa, 0.28, 0.5, 2.2, -5.78, 0.72, 1.4);
+  for (const cx of [-4.3, -2.2]) put(linen, 0.5, 0.36, 0.16, cx, 0.66, 0.16);
+  thing(timber, 1.5, 0.36, 0.8, -3.0, 2.2);
+  put(pane, 1.6, 0.04, 0.9, -3.0, 0.4, 2.2);
+  thing(dark, 2.4, 0.5, 0.45, -3.0, 4.6);
+  put(dark, 2.0, 1.15, 0.06, -3.0, 1.2, 4.72);
+  put(new THREE.MeshBasicMaterial({ color: 0x2f6f9a }), 1.9, 1.05, 0.02, -3.0, 1.2, 4.68);
+  for (const [px, pz] of [[-7.1, 4.9], [0.9, 4.9]]) {                     // big plants
+    thing(glowing(0xb8643c, 0.25, 0.9), 0.55, 0.6, 0.55, px, pz);
+    const bush = new THREE.Mesh(new THREE.IcosahedronGeometry(0.7, 1), leaf);
+    bush.scale.y = 1.4;
+    bush.position.set(px, top + 1.5, pz);
+    tower.add(bush);
+  }
+
+  // Bedroom: behind a half wall on the right, with the bed looking out at the sea.
+  put(white, 0.14, H, 5.0, 2.4, H / 2, 3.1);
+  solid(2.4, 3.1, 0.2, 5.0, H + 0.4);
+  thing(timber, 2.2, 0.32, 2.0, 6.5, 2.6);
+  put(linen, 2.1, 0.22, 1.9, 6.5, 0.43, 2.6);
+  put(aqua, 1.3, 0.06, 1.94, 6.05, 0.57, 2.6);
+  for (const pz of [2.15, 3.05]) put(linen, 0.38, 0.12, 0.6, 7.2, 0.6, pz);
+  put(timber, 0.1, 1.1, 2.1, 7.62, 0.55, 2.6);                             // headboard
+  thing(timber, 0.45, 0.5, 0.45, 7.3, 4.2);
+  put(new THREE.MeshBasicMaterial({ color: 0xfff1d0 }), 0.2, 0.26, 0.2, 7.3, 0.63, 4.2);
+  thing(white, 0.6, 2.2, 2.2, 2.8, -1.6);                                  // wardrobe
+  put(aqua, 1.4, 0.02, 2.4, 4.6, 0.08, 2.6).castShadow = false;            // bedside rug
+
+  // Terrace: sun loungers, a plunge pool, and planters, out in front of the flat.
+  for (const lx of [-9.5, -8.0]) {
+    put(white, 0.7, 0.12, 2.0, lx, 0.32, 7.6);
+    put(aqua, 0.64, 0.06, 1.3, lx, 0.4, 7.8);
+    const back = put(white, 0.7, 0.1, 0.8, lx, 0.56, 6.55);
+    back.rotation.x = -0.7;
+    solid(lx, 7.6, 0.7, 2.0, 0.5);
+  }
+  put(white, 5.0, 0.5, 2.6, 6.0, 0.25, 7.6);                                // plunge pool
+  put(new THREE.MeshBasicMaterial({ color: 0x3fc4e0 }), 4.5, 0.04, 2.1, 6.0, 0.5, 7.6);
+  solid(6.0, 7.6, 5.0, 2.6, 0.8);
+  for (const px of [-11.5, 11.5]) for (const pz of [-7.5, 7.8]) {
+    put(white, 1.0, 0.6, 1.0, px, 0.3, pz);
+    const palm = new THREE.Mesh(new THREE.IcosahedronGeometry(0.8, 1), leaf);
+    palm.scale.y = 1.5;
+    palm.position.set(px, top + 1.7, pz);
+    tower.add(palm);
+    solid(px, pz, 1.0, 1.0, 2.6);
+  }
+
+  const place = (lx, y, lz) => new THREE.Vector3(x + sign * lx, y, z + sign * lz);
+  return {
+    top,
+    lobbyLift: place(spec.w / 2 - 3.2, BASE, -spec.d / 2 + 1.7),   // standing in front of the lift downstairs
+    homeLift: place(liftX, top, -D / 2 + 1.3),                      // and upstairs
+    bed: place(4.9, top, 2.6),                                      // standing beside the bed
+    spawn: place(-1.0, top, 3.2),                                   // where the game starts: in the living room
+    street: place(0, 0, spec.d / 2 + 3.5),                          // on the pavement outside the front doors
+    facing: sign > 0 ? 0 : Math.PI,                                 // the way the flat's front windows face
+  };
+}
+
 // Builds the city, starting at `startX` along the road.
 export function createCity(scene, startX) {
   const kit = makeMaterials();
@@ -481,15 +725,15 @@ export function createCity(scene, startX) {
     speckle(ctx, s, 2500, 0.05);
     ctx.strokeStyle = 'rgba(90,80,65,0.45)';
     ctx.strokeRect(0, 0, s, s);
-  }, 80, 14) });
-  const length = 270, middle = startX + length / 2 - 10;
+  }, 160, 14) });
+  const length = 540, middle = startX - 280 + length / 2; // the city now runs from x = 360 to x = 900
   block(scene, paving, length, 0.05, 46, middle, 0.025, NEAR_EDGE - 23).castShadow = false;
   block(scene, paving, length, 0.05, 46, middle, 0.025, FAR_EDGE + 23).castShadow = false;
   clearings[41].set(middle - length / 2, NEAR_EDGE - 46.2, middle + length / 2, FAR_EDGE + 46.2);
 
   // The welcome sign as you drive in.
-  for (const pz of [-12.2, -17.8]) { block(scene, kit.metal, 0.3, 5.2, 0.3, startX - 22, 2.6, pz); addObstacle(startX - 22.2, startX - 21.8, pz - 0.2, pz + 0.2, 5.5); }
-  block(scene, new THREE.MeshBasicMaterial({ map: label('WELCOME TO MIAMI', 'THE SUNSHINE CAPITAL', '#f2659a', '#fff8e8', 1024, 256) }), 0.2, 2.2, 7.4, startX - 22, 4.3, -15);
+  for (const pz of [-12.2, -17.8]) { block(scene, kit.metal, 0.3, 5.2, 0.3, startX - 292, 2.6, pz); addObstacle(startX - 292.2, startX - 21.8, pz - 0.2, pz + 0.2, 5.5); }
+  block(scene, new THREE.MeshBasicMaterial({ map: label('WELCOME TO MIAMI', 'THE SUNSHINE CAPITAL', '#f2659a', '#fff8e8', 1024, 256) }), 0.2, 2.2, 7.4, startX - 292, 4.3, -15);
 
   const X = (i) => startX + 10 + i * 52; // five plots down each side of the street
   const buildings = [
@@ -504,10 +748,32 @@ export function createCity(scene, startX) {
       tiers: [{ floors: 14, inset: 0 }], balconies: 0xff9a8a, penthouse: true, roofSign: 'CORAL SANDS' },
     { side: 'far', x: X(4), w: 28, d: 22, style: 'glass', kind: 'bank', wall: 0x1c2f52, accent: 0xc9ccd0, glass: '#27477a', neon: 0xffd23a, name: 'MIAMI BANK',
       tiers: [{ floors: 22, inset: 0 }], helipad: true, roofSign: 'MIAMI BANK' },
+    // Ten more towers, on the way in from Palm Ave. Far side first.
+    { side: 'far', x: X(-1), w: 28, d: 18, style: 'deco', kind: 'hotel', wall: 0xf7b89a, accent: 0xfff2d6, glass: '#2d4a55', neon: 0xff8a3a, name: 'THE PELICAN',
+      tiers: [{ floors: 6, inset: 0 }], ledges: true, fin: 'PELICAN', steps: true },
+    { side: 'far', x: X(-2), w: 30, d: 22, style: 'glass', kind: 'casino', wall: 0x1a1a22, accent: 0xd9a83a, glass: '#3a2f1c', neon: 0xffd23a, name: 'LUCKY PALM CASINO',
+      tiers: [{ floors: 12, inset: 0 }, { floors: 6, inset: 3 }], crown: true, roofSign: 'LUCKY PALM' },
+    { side: 'far', x: X(-3), w: 32, d: 20, style: 'condo', kind: 'hospital', wall: 0xf4f6f6, accent: 0xd9382b, glass: '#3a5f6e', neon: 0xff4a3a, name: 'MIAMI GENERAL HOSPITAL',
+      tiers: [{ floors: 10, inset: 0 }], helipad: true, roofSign: 'MIAMI GENERAL' },
+    { side: 'far', x: X(-4), w: 26, d: 18, style: 'condo', kind: 'condo', wall: 0xdfeef4, accent: 0x4a9ad0, glass: '#35596b', neon: 0x4ab8ff, name: 'SEABREEZE CONDOS',
+      tiers: [{ floors: 20, inset: 0 }], balconies: 0x8fd0f0, penthouse: true },
+    { side: 'far', x: X(-5), w: 26, d: 26, style: 'glass', kind: 'office', wall: 0x24465a, accent: 0xe6eef0, glass: '#4f8fa8', neon: 0xdfeaff, name: 'HORIZON TOWER',
+      tiers: [{ floors: 26, inset: 0 }, { floors: 10, inset: 3 }, { floors: 5, inset: 6 }], spire: 18 },
+    // ...and the near side.
+    { side: 'near', x: X(-1), w: 28, d: 18, style: 'deco', kind: 'hotel', wall: 0xf2d6a0, accent: 0xe0734a, glass: '#2d4a55', neon: 0xff6a3a, name: 'CORAL REEF HOTEL',
+      tiers: [{ floors: 5, inset: 0 }], ledges: true, corner: true, roofSign: 'CORAL REEF' },
+    { side: 'near', x: X(-2), w: 26, d: 22, style: 'glass', kind: 'bank', wall: 0x2a2f3a, accent: 0xc9a24a, glass: '#4a5568', neon: 0xffc23a, name: 'SUNSHINE TRUST',
+      tiers: [{ floors: 18, inset: 0 }], helipad: true, roofSign: 'SUNSHINE TRUST' },
+    { side: 'near', x: X(-3), w: 26, d: 18, style: 'deco', kind: 'club', wall: 0x4a2f6a, accent: 0xf2a23a, glass: '#221a33', neon: 0xff8a1e, name: 'THE ELECTRIC',
+      tiers: [{ floors: 5, inset: 0 }], ledges: true, fin: 'ELECTRIC', steps: true },
+    { side: 'near', x: X(-4), w: 32, d: 22, style: 'condo', kind: 'condo', wall: 0xf2e6cf, accent: 0xb08a5a, glass: '#3f5560', neon: 0xffd9a0, name: 'MARINA HEIGHTS',
+      tiers: [{ floors: 12, inset: 0 }, { floors: 6, inset: 4 }], balconies: 0xe0c9a0, steps: true },
+    { side: 'near', x: X(-5), w: 24, d: 24, style: 'glass', kind: 'office', wall: 0x5a3a2a, accent: 0xf2c9a0, glass: '#b07a4a', neon: 0xff9a4a, name: 'GATEWAY PLAZA',
+      tiers: [{ floors: 24, inset: 0 }], crown: true },
     // Near side.
     { side: 'near', x: X(0), w: 30, d: 18, style: 'deco', kind: 'hotel', wall: 0xa8e6cf, accent: 0xf7e08a, glass: '#2d4a55', neon: 0xffe14f, name: 'OCEAN BREEZE HOTEL',
       tiers: [{ floors: 4, inset: 0 }], ledges: true, corner: true, roofSign: 'OCEAN BREEZE' },
-    { side: 'near', x: X(1), w: 26, d: 19, style: 'condo', kind: 'condo', wall: 0xf6f4ee, accent: 0x49c5d6, glass: '#35596b', neon: 0x49e5ff, name: 'AQUA TOWER',
+    { side: 'near', x: X(1), w: 26, d: 19, style: 'condo', kind: 'condo', wall: 0xf6f4ee, accent: 0x49c5d6, glass: '#35596b', neon: 0x49e5ff, name: 'AQUA TOWER', home: true,
       tiers: [{ floors: 18, inset: 0 }], balconies: 0x7fe0f0, penthouse: true },
     { side: 'near', x: X(2), w: 22, d: 22, style: 'glass', kind: 'office', wall: 0x7a4a52, accent: 0xf2c9a0, glass: '#b5746a', neon: 0xff7ad0, name: 'SUNSET PLAZA',
       tiers: [{ floors: 20, inset: 0 }, { floors: 12, inset: 2.5 }], crown: true },
@@ -530,11 +796,26 @@ export function createCity(scene, startX) {
     halo: new THREE.MeshBasicMaterial({ color: colour, alphaMap: pool, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending, depthWrite: false }),
   }));
   const doors = [];
+  let home = null;
   buildings.forEach((spec, i) => {
-    spec.glow = glows[(i + (i >= 5 ? 3 : 0)) % glows.length];
-    build(scene, kit, spec, doors);
+    spec.glow = glows[(i + Math.floor(i / 5) * 2) % glows.length];
+    home = build(scene, kit, spec, doors) || home;
   });
-  return { doors, glows };
+  // Where things are in the casino, as places on the map (it is on the far side, so it is turned round).
+  const lucky = buildings.find((spec) => spec.kind === 'casino');
+  const luckyZ = FAR_EDGE + 5 + lucky.d / 2, back = -lucky.d / 2 + 0.4;
+  const spot = (lx, lz, extra = {}) => ({ x: lucky.x - lx, z: luckyZ - lz, ...extra });
+  const slots = [];
+  for (let row = 0; row < 2; row++) for (let i = 0; i < 6; i++) slots.push(spot(-lucky.w / 2 + 2.6 + i * 1.15, -lucky.d / 5 + row * 3.2 + 1.0));
+  const casino = {
+    slots,                                                               // where to stand to play each machine
+    table: spot(lucky.w / 5, -lucky.d / 6),                              // the roulette table
+    dealer: spot(lucky.w / 5, -lucky.d / 6 - 1.75, { facing: Math.PI }),
+    cashier: spot(0, back + 0.75, { facing: Math.PI }),
+    cage: spot(0, back + 3.0),                                           // in front of the cashier's cage
+    wheel: lucky.wheel,
+  };
+  return { doors, glows, home, casino };
 }
 
 // Each frame: a building's glass doors slide apart when the player walks up.

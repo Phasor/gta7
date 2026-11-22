@@ -10,7 +10,7 @@ import { createRoad } from './road.js';
 import { createGasStation, updateGasStation } from './gasstation.js';
 import { createNeighbourhood } from './neighbourhood.js';
 import { createGunShop, updateGunShop } from './gunshop.js';
-import { createCity, updateCity } from './city.js';
+import { createCity, updateCity, WHEEL, REDS } from './city.js';
 import { sfx, updateSound } from './sound.js';
 import { createSea, updateSea, updateJetSkis, jetSkiNear, seaLanding, fishingBoatNear, castOff, leaveFishingBoat, updateFishingBoat, climbAboardSpot, onBoat } from './sea.js';
 import { createTurfs, updateTurfs } from './gangs.js';
@@ -147,7 +147,7 @@ const saved = (() => { try { return JSON.parse(localStorage.getItem('gta7-save')
 let money = saved.money ?? 1500;
 const owned = new Set(saved.owned || []);
 if (new URLSearchParams(location.search).has('gun')) owned.add('pistol'); // test views start armed
-const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests })); } catch { /* no storage */ } };
+const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests, compDay })); } catch { /* no storage */ } };
 
 const overlay = (css) => { const el = document.createElement('div'); el.style.cssText = `position:fixed;pointer-events:none;font-family:system-ui,sans-serif;${css}`; document.body.appendChild(el); return el; };
 const moneyEl = overlay('right:18px;top:14px;font-weight:bold;font-size:24px;color:#d8f0c0;background:rgba(30,45,25,0.7);padding:6px 14px;border-radius:8px');
@@ -424,7 +424,8 @@ function updateDaylight(dt) {
 }
 
 // Sleeping: at night, the bed in his house skips straight to 7 in the morning.
-const atBed = () => near(9.2, -27.3, 2.1) && player.group.position.x > 7.1 && player.group.position.z < -24.1;
+const atBed = () => (near(9.2, -27.3, 2.1) && player.group.position.x > 7.1 && player.group.position.z < -24.1) // the old house on Palm Ave
+  || (player.group.position.y > city.home.top - 1 && near(city.home.bed.x, city.home.bed.z, 1.9));           // or the penthouse
 let sleeping = false;
 function trySleep() {
   if (sleeping) return;
@@ -544,10 +545,10 @@ function hurtPlayer(amount) {
     health = 100;
     showHealth();
     downed = false;
-    player.group.position.set(0, 0, 0);
+    player.group.position.copy(city.home.street);
     fadeEl.style.opacity = 0;
     persist();
-    toast(`You were shot down. You wake up back on Palm Ave, G$ ${bill} poorer for the doctor.`);
+    toast(`You were shot down. You wake up outside your building in Miami, G$ ${bill} poorer for the doctor.`);
   }, 1300);
 }
 function healOverTime(dt) {
@@ -825,6 +826,177 @@ function updateAutoPole(dt) {
   rig.hook.position.y = pole.hookY;
   rig.cable.scale.y = Math.max(0.05, rig.tip.y - pole.hookY);
 }
+// --- Home ------------------------------------------------------------------------------------
+// He lives in Miami now: the penthouse on top of Aqua Tower. The lift in the lobby
+// goes up to it. The game starts there, and that is where he sleeps.
+const home = city.home;
+const liftAt = () => {
+  const p = player.group.position;
+  if (driving || boating) return null;
+  if (p.y < 3 && near(home.lobbyLift.x, home.lobbyLift.z, 1.7)) return 'up';
+  if (p.y > home.top - 1 && near(home.homeLift.x, home.homeLift.z, 1.7)) return 'down';
+  return null;
+};
+function rideLift() {
+  const way = liftAt();
+  if (!way) return;
+  sfx('door');
+  fadeEl.style.opacity = 1;
+  setTimeout(() => {
+    player.group.position.copy(way === 'up' ? home.homeLift : home.lobbyLift);
+    player.group.rotation.y = home.facing;
+    cam.yaw = home.facing + Math.PI;
+    fadeEl.style.opacity = 0;
+    toast(way === 'up' ? 'Penthouse. Welcome home.' : 'Lobby.');
+  }, 900);
+}
+// --- Lucky Palm Casino -------------------------------------------------------------------------
+// The slot machines and the roulette table take Gator Bucks and pay out Gator Bucks.
+const casino = city.casino;
+const SYMBOLS = ['🍒', '🍋', '🔔', '⭐', '7️⃣', '🐊'];
+const SYMBOL_ODDS = [5, 5, 4, 3, 2, 1];        // out of 20: cherries come up most, the gator hardly ever
+const TRIPLE = [4, 4, 10, 20, 50, 200];        // what three of a kind pays, times the bet
+const SLOT_BETS = [10, 50, 100], STAKES = [10, 50, 100, 500];
+const ROULETTE_BETS = [
+  ['Red', (n) => REDS.has(n), 2], ['Black', (n) => n > 0 && !REDS.has(n), 2],
+  ['Odd', (n) => n % 2 === 1, 2], ['Even', (n) => n > 0 && n % 2 === 0, 2],
+  ['Low (1 to 18)', (n) => n >= 1 && n <= 18, 2], ['High (19 to 36)', (n) => n >= 19, 2],
+  ['One number', (n) => n === luckyNumber, 36],
+];
+let casinoOpen = null;                          // 'slot' or 'roulette' while he is playing
+let stake = 1, luckyNumber = 7, spin = null, casinoNote = '', casinoNet = 0, casinoTested = false;
+let reelsShown = [4, 4, 4], lastNumber = 0, redraw = 0;
+let compDay = saved.compDay ?? 0;
+const rollReel = () => { let r = Math.random() * 20; for (let i = 0; i < 6; i++) { r -= SYMBOL_ODDS[i]; if (r < 0) return i; } return 0; };
+const numberName = (n) => `${n} ${n === 0 ? 'green' : REDS.has(n) ? 'red' : 'black'}`;
+const gs = (amount) => `G$ ${amount.toLocaleString('en-US')}`;
+
+function casinoSpot() {
+  const p = player.group.position;
+  if (driving || boating || p.y > 3) return null;
+  if (casino.slots.some((slot) => near(slot.x, slot.z, 0.75))) return 'slot';
+  if (near(casino.table.x, casino.table.z, 2.7)) return 'roulette';
+  if (near(casino.cage.x, casino.cage.z, 2.0)) return 'cage';
+  return null;
+}
+function drawCasino() {
+  const line = 'display:flex;gap:14px;padding:5px 0;border-top:1px solid rgba(243,230,192,0.25)';
+  const head = (title) => `<div style="font-size:22px;font-weight:bold;margin-bottom:4px">${title}</div>
+    <div style="margin-bottom:8px">You have <b>${gs(money)}</b></div>`;
+  const note = `<div style="min-height:24px;margin:8px 0;font-weight:bold;color:#ffe9a0">${casinoNote}</div>`;
+  if (casinoOpen === 'slot') {
+    shopEl.innerHTML = `${head('Lucky Palm Slots')}
+      <div style="font-size:54px;text-align:center;background:#111;border:3px solid #d9a83a;border-radius:10px;padding:6px 0;letter-spacing:14px">${reelsShown.map((s) => SYMBOLS[s]).join('')}</div>${note}
+      <div style="${line}"><span style="flex:1">🍒🍒🍒 or 🍋🍋🍋 pays 4× &nbsp;·&nbsp; 🔔🔔🔔 10× &nbsp;·&nbsp; ⭐⭐⭐ 20×<br>7️⃣7️⃣7️⃣ 50× &nbsp;·&nbsp; 🐊🐊🐊 JACKPOT 200×<br>Two cherries pays 2× &nbsp;·&nbsp; any other pair gives your bet back</span></div>
+      <div style="margin-top:10px;opacity:0.85">Press 1 to bet G$ 10 &nbsp;·&nbsp; 2 for G$ 50 &nbsp;·&nbsp; 3 for G$ 100 &nbsp;·&nbsp; E to leave</div>`;
+  } else if (casinoOpen === 'roulette') {
+    const rows = ROULETTE_BETS.map(([name, , pays], i) => `<div style="${line}"><b style="width:26px">${i + 1}</b>
+      <span style="flex:1">${i === 6 ? `Number <b>${luckyNumber}</b> only <small>(0 and − change the number)</small>` : name}</span><b>pays ${pays}×</b></div>`).join('');
+    const showing = spin?.kind === 'roulette' ? 'The wheel is spinning…' : casinoNote;
+    shopEl.innerHTML = `${head('Roulette')}
+      <div style="margin-bottom:6px">Your stake: <b>${gs(STAKES[stake])}</b> <small>(9 raises it, 8 lowers it)</small></div>${rows}
+      <div style="min-height:24px;margin:8px 0;font-weight:bold;color:#ffe9a0">${showing}</div>
+      <div style="opacity:0.85">Press 1 to 7 to place your bet and spin &nbsp;·&nbsp; E to leave</div>`;
+  }
+}
+function setCasino(game) {
+  casinoOpen = game;
+  shopEl.style.display = game ? 'block' : 'none';
+  if (game) { casinoNote = game === 'roulette' ? '"Place your bets, please."' : ''; drawCasino(); }
+}
+function playSlot(index) {
+  const bet = SLOT_BETS[index];
+  if (spin) return;
+  if (money < bet) { sfx('error'); casinoNote = 'Not enough Gator Bucks for that bet.'; return drawCasino(); }
+  money -= bet;
+  casinoNet -= bet;
+  sfx('click');
+  spin = { kind: 'slot', time: 0, length: 1.8, bet, reels: [rollReel(), rollReel(), rollReel()] };
+  casinoNote = '';
+  showMoney();
+}
+function playRoulette(index) {
+  const bet = STAKES[stake];
+  if (spin) return;
+  if (money < bet) { sfx('error'); casinoNote = 'Not enough Gator Bucks for that stake.'; return drawCasino(); }
+  money -= bet;
+  casinoNet -= bet;
+  sfx('click');
+  spin = { kind: 'roulette', time: 0, length: 5, bet, choice: index, number: Math.floor(Math.random() * 37) };
+  showMoney();
+  drawCasino();
+}
+function payOut(win, text) {
+  if (win) { money += win; casinoNet += win; sfx(win >= spin.bet * 10 ? 'levelup' : 'coin'); }
+  casinoNote = text;
+  if (!casinoOpen) toast(text); // he walked off before it finished
+  spin = null;
+  showMoney();
+  persist();
+  if (casinoOpen) drawCasino();
+}
+function casinoKey(code) {
+  const digit = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7'].indexOf(code);
+  if (casinoOpen === 'slot') { if (digit >= 0 && digit < 3) playSlot(digit); return; }
+  if (spin) return;
+  if (digit >= 0) return playRoulette(digit);
+  if (code === 'Digit9') stake = Math.min(STAKES.length - 1, stake + 1);
+  else if (code === 'Digit8') stake = Math.max(0, stake - 1);
+  else if (code === 'Digit0') luckyNumber = (luckyNumber + 1) % 37;
+  else if (code === 'Minus') luckyNumber = (luckyNumber + 36) % 37;
+  else return;
+  drawCasino();
+}
+// The cashier in the cage hands out one free chip a day and keeps count of how he is doing.
+function visitCage() {
+  const tally = casinoNet > 0 ? `You are up ${gs(casinoNet)} so far.` : casinoNet < 0 ? `You are down ${gs(-casinoNet)} so far.` : '';
+  if (compDay !== day) {
+    compDay = day;
+    money += 25;
+    sfx('coin');
+    showMoney();
+    persist();
+    return toast(`"Welcome to the Lucky Palm." The cashier slides you a free G$ 25 chip. ${tally}`);
+  }
+  toast(`"You have had today's free chip. Come back tomorrow." ${tally}`);
+}
+// Each frame: the wheel turns, the ball runs round it, and the reels roll.
+function updateCasino(dt) {
+  const step = Math.PI * 2 / 37, { turning, orbit, ball } = casino.wheel;
+  if (testView.has('casino') && !casinoTested && casinoSpot() === testView.get('casino')) { // ?casino=slot or roulette plays one go
+    casinoTested = true;
+    setCasino(testView.get('casino'));
+    if (casinoOpen === 'slot') playSlot(0); else playRoulette(0);
+  }
+  let pace = 0.5, lead = 0, radius = 0.34;
+  if (spin) {
+    spin.time += dt;
+    const done = Math.min(1, spin.time / spin.length);
+    if (spin.kind === 'roulette') {
+      pace = 0.5 + 5 * (1 - done);
+      lead = 16 * (1 - done) ** 2;              // the ball runs the other way and slows into its pocket
+      radius = 0.34 + 0.07 * (1 - done) ** 2;
+      lastNumber = spin.number;
+      if (done >= 1) {
+        const [name, wins, pays] = ROULETTE_BETS[spin.choice], won = wins(spin.number);
+        const bet = spin.choice === 6 ? `number ${luckyNumber}` : name.toLowerCase();
+        payOut(won ? spin.bet * pays : 0, won ? `${numberName(spin.number)}! Your bet on ${bet} wins ${gs(spin.bet * pays)}.` : `${numberName(spin.number)}. Your bet on ${bet} loses.`);
+      }
+    } else {
+      redraw -= dt;
+      reelsShown = spin.reels.map((final, i) => (done >= (i + 1) / 3 ? final : Math.floor(Math.random() * 6))); // they stop one at a time
+      if (done >= 1) {
+        const [a, b, c] = spin.reels, cherries = spin.reels.filter((s) => s === 0).length;
+        const times = a === b && b === c ? TRIPLE[a] : cherries === 2 ? 2 : a === b || b === c || a === c ? 1 : 0;
+        payOut(spin.bet * times, a === b && b === c ? (a === 5 ? `JACKPOT! Three gators pay ${gs(spin.bet * times)}!` : `Three of a kind! You win ${gs(spin.bet * times)}.`)
+          : times === 2 ? `Two cherries: you win ${gs(spin.bet * 2)}.` : times === 1 ? `A pair: you get your ${gs(spin.bet)} back.` : 'Nothing this time.');
+      } else if (redraw <= 0 && casinoOpen === 'slot') { redraw = 0.07; drawCasino(); }
+    }
+  }
+  turning.rotation.y += dt * pace;
+  orbit.rotation.y = turning.rotation.y - (WHEEL.indexOf(lastNumber) + 0.5) * step - lead;
+  ball.position.x = radius;
+}
 // Where he has to stand to use things.
 const near = (px, pz, reach) => Math.hypot(player.group.position.x - px, player.group.position.z - pz) < reach;
 const atCounter = () => near(54, 13.2, 3.2) && player.group.position.z > 6.3; // in front of Big Al
@@ -833,6 +1005,11 @@ const WAGES = 250, WAGE_WAIT = 60;
 let wagesAt = -WAGE_WAIT;
 function useKey() {
   if (workout) return;
+  if (casinoOpen) return setCasino(null);
+  const game = casinoSpot();
+  if (game === 'cage') return visitCage();
+  if (game) return setCasino(game);
+  if (liftAt()) return rideLift();
   if (fishingState) return reelIn();
   if (fishingSpot()) return castLine();
   if (atStall()) return sellFish();
@@ -872,8 +1049,8 @@ if (new URLSearchParams(location.search).has('gator')) { // ?gator puts one on t
   alligators[0].group.scale.setScalar(1);
 }
 
-// The pickup truck, parked in the garage facing the door. F gets in and out.
-const truckStart = (new URLSearchParams(location.search).get('truckat') || '-4,-22.6,0').split(',').map(Number); // ?truckat=x,z,heading
+// The pickup truck, parked on the pavement beside his building in Miami. F gets in and out.
+const truckStart = (new URLSearchParams(location.search).get('truckat') || '677,-11.5,1.5708').split(',').map(Number); // ?truckat=x,z,heading
 const truck = createTruck(scene, renderer, truckStart[0], truckStart[1], truckStart[2]);
 const speedo = document.getElementById('speed');
 let driving = false;
@@ -957,7 +1134,8 @@ window.addEventListener('keydown', (e) => {
   if (!e.repeat) {
     const pick = { Digit1: 'pistol', Digit2: 'shotgun', Digit3: 'rifle' }[e.code];
     const martPick = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
-    if (martOpen) { if (martPick >= 0) buyMart(martPick); }                 // buying at Sunny's Mart
+    if (casinoOpen) casinoKey(e.code);                                      // playing in the casino
+    else if (martOpen) { if (martPick >= 0) buyMart(martPick); }                 // buying at Sunny's Mart
     else if (shopOpen && e.code === 'Digit4') sellIguanas();
     else if (!shopOpen && e.code === 'Digit4') smoke();
     else if (!shopOpen && e.code === 'Digit5') drink();
@@ -995,6 +1173,10 @@ const MOUSE_SENSITIVITY = 0.0025;
 // front, ?crouch to hold him in a crouch, ?walk or ?run to move him sideways,
 // and ?gun, ?aim and ?fire to draw, aim and keep firing the gun.
 const testView = new URLSearchParams(location.search);
+// The game starts at home, in the penthouse, looking out of the front windows.
+player.group.position.copy(city.home.spawn);
+player.group.rotation.y = city.home.facing;
+cam.yaw = city.home.facing + Math.PI;
 if (testView.has('at')) { // ?at=x,z starts the player somewhere else
   const [x, z] = testView.get('at').split(',').map(Number);
   player.group.position.set(x, 0, z);
@@ -1084,7 +1266,9 @@ const npcs = createNpcs(scene, MAP_SIZE / 2, testView.has('npc') ? new THREE.Vec
   [{ x: 20.65, z: -22.1, facing: Math.PI / 2 },   // the cashier behind the counter in Sunny's Mart
    { x: 51.0, z: -26.6, facing: Math.PI / 2 },     // the one in the Gator Gas kiosk
    gunShop.userData.cashier,
-   policeStation.userData.officer],
+   policeStation.userData.officer,
+   city.casino.dealer,                             // the croupier at the roulette table
+   city.casino.cashier],                           // and the cashier in the casino's cage
   policeStation.userData.posts);                // and the officer at the police station's front desk                       // and Big Al, behind the gun shop counter
 if (testView.has('npcpace')) npcDebug.pace = Number(testView.get('npcpace')); // hold NPCs in walk (1) or run (2)
 let hitFlash = 0; // the crosshair turns red for a moment when a shot hits someone
@@ -1131,7 +1315,7 @@ function step(dt) {
 
   // Punching. The fist lands part-way through the swing, on whoever is right in front of him.
   if (testView.has('punch')) punchQueued = true;
-  if (punchQueued && punchTime <= 0 && !driving && !boating && player.downTime < 0 && !shopOpen && !martOpen) {
+  if (punchQueued && punchTime <= 0 && !driving && !boating && player.downTime < 0 && !shopOpen && !martOpen && !casinoOpen) {
     if (gameTime - lastPunchAt > 1.5) nextHand = 'left'; // a fresh flurry always opens with the jab
     punchHand = testView.get('punch') || nextHand;        // (?punch=right holds one hand, for checking the pose)
     nextHand = punchHand === 'left' ? 'right' : 'left';
@@ -1415,6 +1599,15 @@ function step(dt) {
   const climbHint = !boating && !driving && waterDepthAt(player.group.position) > 0 && climbAboardSpot(seaParts, player.group.position) ? 'Press F to climb aboard the fishing boat' : '';
   const boatPrompt = [climbHint, fishPrompt, poleHint].filter(Boolean).join(' · ');
   if (boatPrompt) { usePrompt.textContent = boatPrompt; usePrompt.style.display = 'block'; }
+  const game = casinoSpot();
+  if (casinoOpen && casinoOpen !== game) setCasino(null); // walking away from the machine or the table
+  if (game && !casinoOpen) {
+    usePrompt.textContent = game === 'slot' ? 'Press E to play the slot machine' : game === 'roulette' ? 'Press E to play roulette' : 'Press E to talk to the cashier';
+    usePrompt.style.display = 'block';
+  } else if (casinoOpen) usePrompt.style.display = 'none';
+  updateCasino(dt);
+  const lift = liftAt();
+  if (lift) { usePrompt.textContent = lift === 'up' ? 'Press E to take the lift up to your penthouse' : 'Press E to take the lift down to the lobby'; usePrompt.style.display = 'block'; }
   updateGun(gun, player, dt);
   if (workout && player.bones) {
     const { station } = workout;
