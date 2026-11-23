@@ -14,7 +14,7 @@ const NAVY = '#1c2f52';
 
 // A parked patrol car: a black-and-white saloon with a light bar, push bar,
 // spotlight and markings. Faces +Z.
-function makePatrolCar() {
+export function makePatrolCar(unit = 'PALM AVE P.D.  ·  UNIT 12', number = '12') {
   const car = new THREE.Group();
   const paint = (color, roughness = 0.3, metalness = 0.3) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
   const white = paint(0xf4f4f0), black = paint(0x111214), glass = paint(0x0d1318, 0.08, 0.6), tyre = paint(0x1b1b1c, 0.95, 0);
@@ -62,12 +62,12 @@ function makePatrolCar() {
   part(new THREE.MeshBasicMaterial({ color: 0xf4f4f0 }), 0.24, 0.11, 0.28, 0, 1.55, -0.25, 0.04);
   part(dark, 0.012, 0.5, 0.012, 0.5, 1.7, -1.25, 0);                                           // aerial
   // Markings: POLICE and the unit number on each door, and a blue stripe.
-  const badge = new THREE.MeshBasicMaterial({ map: label('POLICE', 'PALM AVE P.D.  ·  UNIT 12', '#f4f4f0', NAVY, 512, 128) });
+  const badge = new THREE.MeshBasicMaterial({ map: label('POLICE', unit, '#f4f4f0', NAVY, 512, 128) });
   for (const side of [-1, 1]) {
     part(badge, 0.012, 0.3, 1.2, side * 0.946, 0.68, -0.15, 0);
     part(new THREE.MeshBasicMaterial({ color: 0x1c2f52 }), 0.012, 0.045, 2.1, side * 0.946, 0.47, -0.15, 0);
   }
-  part(new THREE.MeshBasicMaterial({ map: label('12', null, '#f4f4f0', NAVY, 128, 128) }), 0.6, 0.012, 0.6, 0, 1.456, -0.95, 0); // number on the roof
+  part(new THREE.MeshBasicMaterial({ map: label(number, null, '#f4f4f0', NAVY, 128, 128) }), 0.6, 0.012, 0.6, 0, 1.456, -0.95, 0); // number on the roof
   // Wheels with steel hubs.
   for (const [wx, wz] of [[0.86, 1.5], [-0.86, 1.5], [0.86, -1.5], [-0.86, -1.5]]) {
     const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.26, 20), tyre);

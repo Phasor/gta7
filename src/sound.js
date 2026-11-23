@@ -90,6 +90,8 @@ const SOUNDS = {
   pickup: () => tone(520, 0.12, { to: 900, volume: 0.15 }),
   error: () => { tone(160, 0.16, { type: 'square', volume: 0.08 }); tone(120, 0.2, { type: 'square', volume: 0.08, delay: 0.14 }); },
   lighter: () => { tone(2600, 0.03, { type: 'square', volume: 0.07 }); noise(0.45, { filter: 'bandpass', freq: 2200, q: 0.4, volume: 0.05, delay: 0.05, attack: 0.05 }); },
+  choke: () => { noise(0.32, { filter: 'bandpass', freq: 420 + Math.random() * 200, q: 3, volume: 0.1, attack: 0.05 }); tone(150, 0.3, { type: 'sawtooth', to: 95, volume: 0.05, attack: 0.05 }); }, // a strangled gasp
+  cap: () => { noise(0.05, { filter: 'highpass', freq: 2500, volume: 0.2 }); tone(700, 0.09, { to: 1800, volume: 0.12 }); tone(2400, 0.05, { type: 'square', volume: 0.04, delay: 0.45 }); }, // a bottle cap coming off, then landing
   drink: () => { for (let gulp = 0; gulp < 3; gulp++) tone(300, 0.11, { to: 150, volume: 0.16, delay: gulp * 0.24 }); },
   eat: () => { for (let bite = 0; bite < 4; bite++) noise(0.07, { filter: 'bandpass', freq: 2400 + Math.random() * 1200, q: 1.5, volume: 0.14, delay: bite * 0.17 }); },
   splash: () => { noise(0.5, { filter: 'bandpass', freq: 1800, to: 500, q: 0.6, volume: 0.22 }); noise(0.25, { freq: 300, volume: 0.15 }); },

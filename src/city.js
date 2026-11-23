@@ -716,6 +716,90 @@ function addPenthouse(tower, spec, x, z, sign, top, tw, td) {
   };
 }
 
+// A second street, Brew St, crossing the main one between two of the blocks. It runs along Z.
+function crossStreet(scene, kit, x, northEnd, southEnd) {
+  const KERB = 0.13;
+  const plain = (color, roughness = 0.8) => new THREE.MeshStandardMaterial({ color, roughness });
+  const asphalt = new THREE.MeshStandardMaterial({ roughness: 0.95, map: canvasTexture(128, (ctx, s) => {
+    ctx.fillStyle = '#4a4a48';
+    ctx.fillRect(0, 0, s, s);
+    speckle(ctx, s, 4000, 0.07);
+    ctx.fillStyle = 'rgba(30,30,30,0.25)'; // darker strips where the tyres run
+    ctx.fillRect(s * 0.18, 0, s * 0.1, s);
+    ctx.fillRect(s * 0.72, 0, s * 0.1, s);
+  }, 1, 8) });
+  const slabs = new THREE.MeshStandardMaterial({ roughness: 1, map: canvasTexture(64, (ctx, s) => {
+    ctx.fillStyle = '#c4beb0';
+    ctx.fillRect(0, 0, s, s);
+    speckle(ctx, s, 800, 0.06);
+    ctx.fillStyle = 'rgba(70,65,55,0.5)';
+    ctx.fillRect(0, 0, s, 2);
+  }, 1, 30) });
+  const kerbStone = plain(0xd3cec2, 0.9), white = plain(0xeeeae0, 0.7), yellow = plain(0xe3b21e, 0.7);
+  const flat = (material, w, h, d, px, y, pz) => { block(scene, material, w, h, d, px, y, pz).castShadow = false; };
+  for (const [junction, end] of [[FAR_EDGE, northEnd], [NEAR_EDGE, southEnd]]) {
+    const from = Math.min(junction, end), to = Math.max(junction, end), length = to - from, mid = (from + to) / 2;
+    flat(asphalt, 6, 0.07, length, x, 0.035, mid);
+    for (const side of [-1, 1]) {
+      flat(slabs, 1.5, KERB, length, x + side * 3.75, KERB / 2, mid);
+      flat(kerbStone, 0.16, KERB + 0.01, length, x + side * 3.08, (KERB + 0.01) / 2, mid);
+      flat(white, 0.11, 0.004, length, x + side * 2.65, 0.072, mid);
+      addFloor(x + side * 3.75 - 0.75, x + side * 3.75 + 0.75, from, to, KERB);
+    }
+    for (let dash = from + 5; dash + 3 < to - 2; dash += 9) flat(yellow, 0.12, 0.004, 3, x, 0.072, dash + 1.5);
+    flat(white, 5.2, 0.004, 0.4, x, 0.072, junction + Math.sign(end - junction) * 0.7); // stop line at the junction
+  }
+  // Street lamps, and the street's name at the corner.
+  for (const lampZ of [14, 29, -24, -42]) {
+    const lamp = new THREE.Group();
+    lamp.position.set(x + 4.15, KERB, lampZ);
+    block(lamp, kit.metal, 0.24, 0.3, 0.24, 0, 0.15, 0);
+    block(lamp, kit.metal, 0.11, 6, 0.11, 0, 3, 0);
+    block(lamp, kit.metal, 2.2, 0.08, 0.08, -1.05, 5.95, 0);
+    block(lamp, new THREE.MeshBasicMaterial({ color: 0xfff3cf }), 0.5, 0.05, 0.22, -2.1, 5.86, 0);
+    scene.add(lamp);
+    addObstacle(x + 4.02, x + 4.28, lampZ - 0.13, lampZ + 0.13, 6);
+  }
+  // Big signs at the junction saying what is down each end of the street.
+  for (const [boardX, boardZ, text, small, colour] of [[x + 4.7, NEAR_EDGE - 1.6, 'POLICE STATION', 'DOWN THIS STREET', '#12305a'], [x - 4.7, FAR_EDGE + 1.6, 'COLD ONES BEER', 'UP THIS STREET', '#16302e']]) {
+    block(scene, kit.metal, 0.12, 3.6, 0.12, boardX, 1.8, boardZ);
+    block(scene, new THREE.MeshBasicMaterial({ map: label(text, small, colour, '#fff6dc', 512, 192) }), 0.06, 0.95, 2.5, boardX, 3.3, boardZ);
+    addObstacle(boardX - 0.12, boardX + 0.12, boardZ - 0.12, boardZ + 0.12, 3.8);
+  }
+  for (const [signX, signZ] of [[x + 4.1, FAR_EDGE + 0.6], [x - 4.1, NEAR_EDGE - 0.6]]) {
+    block(scene, kit.metal, 0.07, 2.9, 0.07, signX, 1.58, signZ);
+    block(scene, new THREE.MeshBasicMaterial({ map: label('BREW ST', null, '#1f6b3a', '#ffffff', 256, 64) }), 0.03, 0.22, 0.9, signX, 2.88, signZ);
+    addObstacle(signX - 0.1, signX + 0.1, signZ - 0.1, signZ + 0.1, 3);
+  }
+}
+
+// A cash machine standing on the pavement. facing: 0 if its screen faces +Z, Math.PI for -Z.
+// Returns where to stand to use it.
+function addAtm(scene, x, z, facing) {
+  const atm = new THREE.Group();
+  atm.position.set(x, 0.05, z);
+  atm.rotation.y = facing;
+  const plain = (color, roughness = 0.5, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness, ...extra });
+  const body = plain(0x1c3f6e, 0.45, { metalness: 0.3 }), steel = plain(0xb9bcbe, 0.35, { metalness: 0.6 }), dark = plain(0x17181a, 0.6);
+  block(atm, plain(0x8f9396, 0.9), 1.0, 0.1, 0.9, 0, 0.05, 0);                                             // concrete foot
+  block(atm, body, 0.8, 1.75, 0.6, 0, 0.975, 0);
+  block(atm, body, 0.9, 0.3, 0.7, 0, 2.0, 0);                                                              // the hood over the top
+  block(atm, new THREE.MeshBasicMaterial({ map: label('ATM', 'GATOR BANK · 24 HOURS', '#1c3f6e', '#ffd75a', 256, 128) }), 0.86, 0.26, 0.02, 0, 2.0, 0.36);
+  block(atm, dark, 0.56, 0.42, 0.03, 0, 1.45, 0.3);                                                        // screen surround
+  block(atm, new THREE.MeshBasicMaterial({ color: 0x3fa0e0 }), 0.48, 0.34, 0.02, 0, 1.45, 0.315);          // the lit screen
+  block(atm, new THREE.MeshBasicMaterial({ color: 0xeaf6ff }), 0.3, 0.03, 0.022, 0, 1.52, 0.317);
+  block(atm, new THREE.MeshBasicMaterial({ color: 0xeaf6ff }), 0.2, 0.03, 0.022, -0.05, 1.42, 0.317);
+  const shelf = block(atm, steel, 0.56, 0.04, 0.24, 0, 1.08, 0.38);                                        // keypad shelf
+  shelf.rotation.x = 0.3;
+  for (let row = 0; row < 4; row++) for (let col = 0; col < 3; col++) block(atm, dark, 0.045, 0.012, 0.035, -0.07 + col * 0.07, 1.115 - row * 0.014, 0.33 + row * 0.045).rotation.x = 0.3;
+  block(atm, dark, 0.2, 0.025, 0.03, 0.18, 1.2, 0.305);                                                    // card slot
+  block(atm, new THREE.MeshBasicMaterial({ color: 0x4fe07a }), 0.04, 0.02, 0.03, 0.31, 1.2, 0.305);
+  block(atm, dark, 0.44, 0.05, 0.03, 0, 0.82, 0.305);                                                      // where the cash comes out
+  scene.add(atm);
+  addObstacle(x - 0.45, x + 0.45, z - 0.4, z + 0.4, 2.2);
+  return { x: x + Math.sin(facing) * 0.95, z: z + Math.cos(facing) * 0.95 };
+}
+
 // Builds the city, starting at `startX` along the road.
 export function createCity(scene, startX) {
   const kit = makeMaterials();
@@ -795,6 +879,7 @@ export function createCity(scene, startX) {
     material: new THREE.MeshBasicMaterial({ color: colour }),
     halo: new THREE.MeshBasicMaterial({ color: colour, alphaMap: pool, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending, depthWrite: false }),
   }));
+  crossStreet(scene, kit, startX - 16, 34, -55); // between the Pelican and the Flamingo; the beer shop is at its top end
   const doors = [];
   let home = null;
   buildings.forEach((spec, i) => {
@@ -815,7 +900,9 @@ export function createCity(scene, startX) {
     cage: spot(0, back + 3.0),                                           // in front of the cashier's cage
     wheel: lucky.wheel,
   };
-  return { doors, glows, home, casino };
+  // Cash machines: outside Aqua Tower, at the corner of Brew St, and outside the casino.
+  const atms = [addAtm(scene, startX + 46.5, NEAR_EDGE - 3.4, 0), addAtm(scene, startX - 8.5, NEAR_EDGE - 3.4, 0), addAtm(scene, startX - 76.5, FAR_EDGE + 3.4, Math.PI)];
+  return { doors, glows, home, casino, atms };
 }
 
 // Each frame: a building's glass doors slide apart when the player walks up.

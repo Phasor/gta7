@@ -525,7 +525,9 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
     }
   }
   // Smoking: his left hand lifts the cigarette to his mouth for a drag, then drops again.
-  player.smokeLift = (player.smokeLift || 0) + ((input.smoke ? 1 : 0) - (player.smokeLift || 0)) * Math.min(1, 5 * dt);
+  // (Drinking gives the exact height of the hand, already eased, as input.lift.)
+  if (input.lift !== undefined) player.smokeLift = input.lift;
+  else player.smokeLift = (player.smokeLift || 0) + ((input.smoke ? 1 : 0) - (player.smokeLift || 0)) * Math.min(1, 5 * dt);
   if (player.smokeLift > 0.01) {
     const s = player.smokeLift;
     // Point the upper arm forward and a little down, then fold the forearm so the
@@ -547,6 +549,40 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
     aimTurn.setFromUnitVectors(limbDirection, aimDirection);
     turnBoneBy(b.foreArmL, aimTurn.slerpQuaternions(NO_TURN, aimTurn.clone(), s));
   }
+
+  // A kick: his right knee comes up, then the leg snaps out straight in front, and he leans back.
+  if (input.kick > 0.01) {
+    const k = input.kick;
+    sideways.set(1, 0, 0).applyQuaternion(group.quaternion);
+    turnBone(b.thighR, sideways, -1.4 * k);
+    turnBone(b.shinR, sideways, 2.6 * k * (1 - k));
+    turnBone(b.spine, sideways, -0.24 * k);
+  }
+
+  // Strangling: both arms reach out to the other person's neck and his fingers close round it.
+  // input.choke goes from 0 to 1; input.chokeAt is where the neck is.
+  if (input.choke > 0.01 && input.chokeAt) {
+    const c = input.choke;
+    sideways.set(1, 0, 0).applyQuaternion(group.quaternion);
+    turnBone(b.spine, sideways, (0.14 + 0.34 * (input.chokeLean || 0)) * c); // leaning into it (further, to reach across a counter)
+    for (const [upper, fore, hand, side, fingers] of [[b.armL, b.foreArmL, b.handL, 1, player.fingersL], [b.armR, b.foreArmR, b.handR, -1, player.fingersR]]) {
+      upper.getWorldPosition(fistTarget);
+      aimDirection.copy(input.chokeAt).sub(fistTarget);
+      aimDirection.y += 0.03 * Math.sin(performance.now() * 0.012 + side) * c; // the strain of squeezing
+      aimDirection.normalize();
+      pointLimb(upper, fore, aimDirection, c);
+      pointLimb(fore, hand, aimDirection, c);
+      if (fingers?.length === 4) {
+        fingers[0][0].getWorldPosition(shoulderSpot);
+        fingers[3][0].getWorldPosition(jointSpot);
+        limbDirection.copy(jointSpot).sub(shoulderSpot).normalize();
+        for (const finger of fingers) for (const joint of finger) turnBone(joint, limbDirection, side * FIST_CURL * 0.5 * c);
+      }
+    }
+  }
+
+  // Drinking: his head tips back.
+  if (input.tilt > 0.01) turnBone(b.head, sideways.set(1, 0, 0).applyQuaternion(group.quaternion), -0.45 * input.tilt);
 
   // Slapped: his head snaps round to the side, then eases back.
   if (player.slap > 0) {

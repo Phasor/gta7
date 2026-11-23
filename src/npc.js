@@ -12,6 +12,7 @@ import { turnBoneBy } from './player.js';
 import { pushOut, floorAt, addObstacle } from './world.js';
 import { GANGS, POSTS } from './gangs.js';
 import { sfx } from './sound.js';
+import { FIGHTERS } from './boxing.js';
 
 const FOLDER = `${import.meta.env.BASE_URL}models/people/`;
 
@@ -52,6 +53,8 @@ for (const [key, gang] of Object.entries(GANGS)) {
     post: [gang.turf[0] + px, gang.turf[1] - gang.front * pz],
   }));
 }
+// The boxers at the Miami Fight Club, who wait beside the ring until someone challenges them.
+FIGHTERS.forEach((fighter, i) => PEOPLE.push({ kind: 'man', clothes: fighter.clothes, height: fighter.height, fighter: i, home: fighter.post }));
 const STRIKE_RANGE = 0.8; // how close they get before swinging
 const STRIKE_TIME = 0.55; // seconds for the whole swing
 
@@ -80,6 +83,7 @@ const recoloured = new Map();
 function recolour(material, degrees) {
   const image = material.map?.image;
   if (!degrees || !image) return material;
+  const prison = degrees === 'prison'; // a prisoner's orange overalls
   const cacheKey = material.uuid + ':' + degrees; // repainting is slow, so each outfit is only made once
   if (recoloured.has(cacheKey)) return recoloured.get(cacheKey);
   const canvas = document.createElement('canvas');
@@ -94,7 +98,8 @@ function recolour(material, degrees) {
     colour.setRGB(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255).getHSL(hsl);
     const skinOrHair = hsl.h < 0.14 || hsl.h > 0.97;
     if (skinOrHair && hsl.s >= 0.08) continue;
-    if (hsl.s >= 0.08) colour.setHSL((hsl.h + degrees / 360) % 1, hsl.s, hsl.l); // coloured cloth: new colour
+    if (prison) colour.setHSL(0.07, 0.95, 0.3 + hsl.l * 0.35);
+    else if (hsl.s >= 0.08) colour.setHSL((hsl.h + degrees / 360) % 1, hsl.s, hsl.l); // coloured cloth: new colour
     else colour.multiply(dye);                                                   // white or grey cloth: dyed
     d[i] = colour.r * 255; d[i + 1] = colour.g * 255; d[i + 2] = colour.b * 255;
   }
@@ -176,18 +181,21 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
     for (const cashierSpot of cashierSpots || []) {
       const model = cloneSkinned(man.scene);
       if (cashierSpot.uniform) addUniform(model); // the police desk officer
-      else model.traverse((part) => { if (part.isMesh) part.material = recolour(part.material, 330); });
+      else model.traverse((part) => { if (part.isMesh) part.material = recolour(part.material, cashierSpot.prisoner ? 'prison' : 330); });
       const group = new THREE.Group();
-      group.position.set(cashierSpot.x, 0, cashierSpot.z);
+      group.position.set(cashierSpot.x, cashierSpot.y ?? 0, cashierSpot.z); // (y: for people who stand upstairs)
       group.position.y = floorAt(group.position);
       group.rotation.y = cashierSpot.facing;
       group.add(model);
       scene.add(group);
       const mixer = new THREE.AnimationMixer(model);
       mixer.clipAction(man.clips[0]).play(); // standing idle
-      const bones = [model.getObjectByName('Neck'), model.getObjectByName('Head')];
-      npcs.cashiers.push({ group, mixer, bones, clean: bones.map((bone) => bone.quaternion.clone()), look: 0 });
-      addObstacle(cashierSpot.x - 0.3, cashierSpot.x + 0.3, cashierSpot.z - 0.3, cashierSpot.z + 0.3, 2.1);
+      const bones = ['Neck', 'Head', 'LeftArm', 'RightArm', 'LeftForeArm', 'RightForeArm', 'Spine'].map((name) => model.getObjectByName(name));
+      npcs.cashiers.push({ group, model, mixer, bones, clean: bones.map((bone) => bone.quaternion.clone()), look: 0,
+        cashier: true, home: group.position.clone(), facing: cashierSpot.facing, handsUp: 0, choke: 0, chokeTime: 0, dead: 0, fall: 0,
+        meek: !cashierSpot.uniform && !cashierSpot.prisoner, // shop staff put their hands up at the sight of a gun
+        cb: { neck: bones[0], head: bones[1], armL: bones[2], armR: bones[3], foreL: bones[4], foreR: bones[5], spine: bones[6] } });
+      addObstacle(cashierSpot.x - 0.3, cashierSpot.x + 0.3, cashierSpot.z - 0.3, cashierSpot.z + 0.3, group.position.y + 2.1, cashierSpot.y ? group.position.y - 0.3 : undefined);
     }
 
     npcs.officers = [];
@@ -255,6 +263,15 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
         home: person.home ? new THREE.Vector3(person.home[0], 0, person.home[1]) : null,
         target: new THREE.Vector3(), pace: 0, strikeTime: 0, struck: false, still: false,
       };
+      if (person.fighter !== undefined) { // a boxer: gloves on, and he stays in his corner
+        npc.fighter = person.fighter;
+        npc.corner = new THREE.Vector3(person.home[0], 0, person.home[1]);
+        npc.still = true;
+        addGloves(model, FIGHTERS[person.fighter].champion ? 0xd9a83a : 0xc0281e);
+      }
+      // The bones that move when someone has them by the throat (the right arm is already in the list above).
+      npc.cb = { neck: bone('Neck'), head: bone('Head'), armL: bone('LeftArm'), armR: arm[0], foreL: bone('LeftForeArm'), foreR: arm[1], spine: bone('Spine') };
+      for (const part of [npc.cb.neck, npc.cb.head, npc.cb.armL, npc.cb.foreL, npc.cb.spine]) npc.clean.push({ bone: part, rotation: part.quaternion.clone() });
       if (person.gang) {
         const gang = GANGS[person.gang];
         npc.gang = person.gang;
@@ -266,6 +283,7 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
       }
       place(npc, new THREE.Vector3(person.home?.[0] ?? 0, 0, person.home?.[1] ?? 0));
       if (npc.post) npc.group.rotation.y = npc.postFacing;
+      if (npc.corner) toCorner(npc);
       if (i === 0 && testSpot) {
         npc.group.position.copy(testSpot);
         npc.group.rotation.y = 0;
@@ -481,9 +499,52 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
   // The cashier: stands still, and his head follows the player round the shop.
   for (const cashier of npcs.cashiers || []) {
     cashier.bones.forEach((bone, i) => bone.quaternion.copy(cashier.clean[i])); // undo last frame's head turn
-    cashier.mixer.update(dt);
+    if (cashier.dead <= 0) cashier.mixer.update(dt);
     cashier.bones.forEach((bone, i) => cashier.clean[i].copy(bone.quaternion));
+    // Strangled: he drops behind the counter, and someone new takes over the till after a while.
+    if (cashier.dead > 0) {
+      cashier.dead -= dt;
+      cashier.fall = Math.min(1, cashier.fall + dt * 2);
+      if (cashier.dead <= 0) { cashier.fall = 0; cashier.choke = 0; cashier.bend = 0; cashier.group.position.copy(cashier.home); cashier.group.rotation.y = cashier.facing; }
+    }
+    cashier.model.rotation.x = -Math.PI / 2 * cashier.fall * cashier.fall;
+    cashier.model.position.y = 0.12 * cashier.fall;
+    const held = npcs.grip?.victim === cashier;
+    cashier.choke += ((held ? 1 : 0) - cashier.choke) * Math.min(1, 5 * dt);
+    if (held) cashier.chokeTime = npcs.grip.time;
+    // Held by the throat he is pulled a step forward and bent over the counter toward the
+    // player (he stays on his own side of it); let go, he straightens up and steps back.
+    let standX = cashier.home.x, standZ = cashier.home.z, bend = 0;
+    if (held) {
+      const hx = playerPosition.x - cashier.home.x, hz = playerPosition.z - cashier.home.z, apart = Math.hypot(hx, hz) || 1;
+      standX += hx / apart * 0.55;
+      standZ += hz / apart * 0.55;
+      bend = Math.min(1.0, Math.max(0, apart - 1.0) / 0.45); // the further away he is, the further over he is hauled
+      cashier.group.rotation.y = Math.atan2(hx, hz);
+    }
+    cashier.bend = (cashier.bend || 0) + (bend - (cashier.bend || 0)) * Math.min(1, 5 * dt);
+    if (cashier.dead <= 0) {
+      cashier.group.position.x += (standX - cashier.group.position.x) * Math.min(1, 5 * dt);
+      cashier.group.position.z += (standZ - cashier.group.position.z) * Math.min(1, 5 * dt);
+    }
+    if (cashier.bend > 0.01) {
+      const side = axis.set(1, 0, 0).applyQuaternion(cashier.group.quaternion);
+      turnBoneBy(cashier.cb.spine, swing.setFromAxisAngle(side, cashier.bend));
+      turnBoneBy(cashier.cb.head, swing.setFromAxisAngle(side, -0.6 * cashier.bend)); // his face stays up, toward the player
+    }
+    if (cashier.choke > 0.01) poseChoked(cashier, cashier.choke, cashier.chokeTime / CHOKE_TIME);
+    if (cashier.dead > 0) continue;
     const dx = playerPosition.x - cashier.group.position.x, dz = playerPosition.z - cashier.group.position.z;
+    // A gun in the shop: his hands go up.
+    const scared = npcs.threat && cashier.meek && !held && Math.hypot(dx, dz) < 7 && Math.abs(playerPosition.y - cashier.group.position.y) < 2;
+    cashier.handsUp += ((scared ? 1 : 0) - cashier.handsUp) * Math.min(1, 4 * dt);
+    if (cashier.handsUp > 0.01) {
+      const front = axis.set(0, 0, 1).applyQuaternion(cashier.group.quaternion), h = cashier.handsUp;
+      turnBoneBy(cashier.cb.armL, swing.setFromAxisAngle(front, 1.9 * h));
+      turnBoneBy(cashier.cb.armR, swing.setFromAxisAngle(front, -1.9 * h));
+      turnBoneBy(cashier.cb.foreL, swing.setFromAxisAngle(front, 1.0 * h));
+      turnBoneBy(cashier.cb.foreR, swing.setFromAxisAngle(front, -1.0 * h));
+    }
     let want = Math.atan2(dx, dz) - cashier.group.rotation.y;
     want = Math.atan2(Math.sin(want), Math.cos(want));
     if (Math.hypot(dx, dz) > 9) want = 0;                 // nobody about: looks straight ahead
@@ -500,12 +561,21 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     if (npc.state === 'dead') {
       // Topple over (backwards, forwards or to one side) with limbs going
       // limp, then lie there until it's time to be replaced.
-      npc.fall = Math.min(1, npc.fall + dt * 2.2);
+      const rising = npc.getUp && npc.timer <= 0; // only thrown to the floor: he gets back up
+      npc.fall = rising ? npc.fall - dt * 2.2 : Math.min(1, npc.fall + dt * 2.2);
+      if (rising && npc.fall <= 0) {
+        npc.tilt.rotation.set(0, 0, 0);
+        npc.tilt.position.y = 0;
+        for (const { bone, from } of npc.deathPose) bone.quaternion.copy(from);
+        Object.assign(npc, { deathPose: null, state: 'idle', timer: 0.4, fall: 0, getUp: false });
+        continue;
+      }
       const tipped = npc.fall * npc.fall; // slow at first, then faster, like a real fall
       npc.tilt.rotation[npc.fallWay[0]] = npc.fallWay[1] * Math.PI / 2 * tipped;
       npc.tilt.position.y = 0.12 * tipped;
       for (const { bone, from, to: limp } of npc.deathPose) bone.quaternion.slerpQuaternions(from, limp, tipped);
       if (npc.timer <= 0 && !npc.still) place(npc, npc.home ?? playerPosition); // city people come back in the city
+      else if (npc.timer <= 0 && npc.corner && !npc.getUp && !npc.inBout) reviveNpc(npc); // a boxer is back on his feet in his corner
       continue;
     }
 
@@ -513,8 +583,17 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     const playerDistance = Math.hypot(toPlayerX, toPlayerZ);
     let pace = 0;       // 0 standing, 1 walking, 2 running
     let heading = null; // the way they want to face
+    const held = npcs.grip?.victim === npc;
+    npc.choke = (npc.choke || 0) + ((held ? 1 : 0) - (npc.choke || 0)) * Math.min(1, 5 * dt);
+    if (held) npc.chokeTime = npcs.grip.time;
 
-    if (npc.gang) {
+    if (held) {
+      // Held by the throat: pulled in close, face to face, and going nowhere.
+      position.x += (npcs.grip.spot.x - position.x) * Math.min(1, 6 * dt);
+      position.z += (npcs.grip.spot.z - position.z) * Math.min(1, 6 * dt);
+      heading = Math.atan2(toPlayerX, toPlayerZ);
+      npc.aiming = false;
+    } else if (npc.gang) {
       // Gang members guard their turf. Come too close, or hurt one, and the whole gang opens fire.
       npc.flashTime = (npc.flashTime || 0) - dt;
       if (npc.flashTime <= 0) npc.flash.visible = false;
@@ -581,7 +660,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
       }
     } else if (npc.state === 'strike') {
       heading = Math.atan2(toPlayerX, toPlayerZ);
-      npc.strikeTime += dt / STRIKE_TIME;
+      npc.strikeTime += dt / STRIKE_TIME * (npc.quick || 1); // (boxers swing faster)
       if (!npc.struck && npc.strikeTime >= 0.45) {
         npc.struck = true;
         if (playerDistance < STRIKE_RANGE + 0.6) { // he may have dodged
@@ -619,7 +698,88 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     for (const entry of npc.clean) entry.rotation.copy(entry.bone.quaternion);
     if (npc.state === 'strike') poseStrike(npc, playerPosition, Math.min(1, npc.strikeTime));
     if (npc.gang && npc.aiming) poseAim(npc, playerPosition);
+    if (npc.choke > 0.01) poseChoked(npc, npc.choke, (npc.chokeTime || 0) / CHOKE_TIME);
   }
+}
+
+// --- Boxers -------------------------------------------------------------------------------------
+// Boxing gloves on both hands.
+function addGloves(model, colour) {
+  const leather = new THREE.MeshStandardMaterial({ color: colour, roughness: 0.45 });
+  for (const hand of ['LeftHand', 'RightHand']) {
+    const glove = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 10), leather);
+    glove.scale.set(1, 1.3, 1.05);
+    glove.position.set(0, 0.075, 0.01);
+    glove.castShadow = true;
+    model.getObjectByName(hand)?.add(glove);
+  }
+}
+function toCorner(npc) {
+  npc.group.position.copy(npc.corner);
+  npc.group.rotation.y = -Math.PI / 2; // facing the ring
+}
+// Put a boxer back in his corner, on his feet and fresh.
+export function reviveNpc(npc) {
+  place(npc, npc.corner);
+  toCorner(npc);
+  npc.timer = 99;
+  npc.getUp = false;
+}
+// Thrown to the floor: he lies there for `seconds`, then gets up again.
+export function floorNpc(npc, byPosition, seconds) {
+  if (npc.state === 'dead') return;
+  const position = npc.group.position;
+  npc.group.rotation.y = Math.atan2(byPosition.x - position.x, byPosition.z - position.z);
+  Object.assign(npc, { state: 'dead', fall: 0, timer: seconds, getUp: true, fallWay: FALL_WAYS[0], aiming: false });
+  npc.deathPose = makeDeathPose(npc);
+}
+
+// --- Strangling -------------------------------------------------------------------------------
+export const CHOKE_TIME = 4.5; // seconds of squeezing before they go limp
+const axis = new THREE.Vector3();
+const smooth = (from, to, t) => { const u = Math.min(1, Math.max(0, (t - from) / (to - from))); return u * u * (3 - 2 * u); };
+
+// Someone with hands round their throat: head forced back, their own hands come up to
+// pull at the wrists, and they twist and struggle. As `progress` nears 1 the fight goes
+// out of them: the arms sink and the head lolls forward.
+function poseChoked(victim, weight, progress) {
+  const cb = victim.cb, side = axis.set(1, 0, 0).applyQuaternion(victim.group.quaternion);
+  const fight = 1 - smooth(0.68, 1, progress);
+  const now = performance.now() * 0.001;
+  const shake = (Math.sin(now * 13) * 0.6 + Math.sin(now * 21.7) * 0.4) * 0.07 * weight * fight;
+  turnBoneBy(cb.head, swing.setFromAxisAngle(side, weight * (-0.45 * fight + 0.5 * (1 - fight))));
+  turnBoneBy(cb.spine, swing.setFromAxisAngle(side, -0.14 * weight * fight));
+  turnBoneBy(cb.spine, swing.setFromAxisAngle(UP, shake * 1.6));
+  for (const [upper, fore, way] of [[cb.armL, cb.foreL, 1], [cb.armR, cb.foreR, -1]]) {
+    turnBoneBy(upper, swing.setFromAxisAngle(side, (-1.15 + shake * way) * weight * fight));
+    turnBoneBy(fore, swing.setFromAxisAngle(side, -1.25 * weight * fight));
+  }
+}
+
+// Who he could get his hands on: the nearest living person in front of him. Shop staff
+// can be reached across their counter. Returns an NPC or a cashier, or null.
+export function findGrab(npcs, position, facing) {
+  let best = null, nearest = Infinity;
+  const consider = (who, reach) => {
+    const dx = who.group.position.x - position.x, dz = who.group.position.z - position.z, distance = Math.hypot(dx, dz);
+    if (distance > reach || distance >= nearest || Math.abs(who.group.position.y - position.y) > 1) return;
+    if (distance > 0.2 && (dx * Math.sin(facing) + dz * Math.cos(facing)) / distance < 0.3) return; // behind him
+    best = who;
+    nearest = distance;
+  };
+  for (const npc of npcs) if (npc.state !== 'dead') consider(npc, 1.6);
+  for (const cashier of npcs.cashiers || []) if (cashier.dead <= 0) consider(cashier, 2.5);
+  return best;
+}
+// Where their neck is, for his hands to go to.
+export function neckSpot(victim, out) {
+  return victim.cb.neck.getWorldPosition(out);
+}
+// The squeezing has done its work. Returns true if it was an NPC who can drop cash.
+export function strangle(victim, byPosition) {
+  if (victim.cashier) { victim.dead = 120; victim.fall = 0; return false; }
+  hitNpc(victim, byPosition, 1e6);
+  return true;
 }
 
 // Which living NPC, if any, a bullet travelling from `origin` along `direction`
