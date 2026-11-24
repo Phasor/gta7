@@ -205,7 +205,9 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
       const group = new THREE.Group();
       group.position.set(post.x, 0, post.z);
       group.rotation.y = post.facing;
-      group.add(model);
+      const tilt = new THREE.Group(); // tips over when he is killed
+      tilt.add(model);
+      group.add(tilt);
       scene.add(group);
       const mixer = new THREE.AnimationMixer(model);
       const actions = {};
@@ -215,7 +217,7 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
         action.setEffectiveWeight(clip.name === 'Idle' ? 1 : 0);
         actions[clip.name] = action;
       }
-      npcs.officers.push({ group, mixer, actions, post, pace: 0 });
+      npcs.officers.push({ group, tilt, model, mixer, actions, post, pace: 0, officer: true, state: 'idle', health: OFFICER_HEALTH, fall: 0, timer: 0 });
     }
     const people = testKind === 'man' ? [PEOPLE[1], PEOPLE[0], ...PEOPLE.slice(2)] : PEOPLE;
 
@@ -456,6 +458,7 @@ function addUniform(model) {
 }
 
 const OFFICER_RUN = 5.6, OFFICER_WALK = 1.5;
+const OFFICER_HEALTH = 130, OFFICER_RESPAWN = 45; // tougher than most; a new officer takes over the post after a while
 
 // police: { wanted, canCatch, onArrest(officer) }. While `wanted` is true the officers run the player down.
 // gangs: { canTarget, onShot(npc, hit), onAlert(npc) }. Gang members shoot at the player when he
@@ -464,6 +467,24 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
   for (const crew of Object.values(npcs.crews || {})) crew.alert = Math.max(0, crew.alert - dt);
   for (const line of npcs.tracers || []) line.material.opacity = Math.max(0, line.material.opacity - dt * 7);
   for (const cop of npcs.officers || []) {
+    if (cop.state === 'dead') { // shot, stabbed or beaten down: he falls, and later a new officer takes his post
+      cop.timer -= dt;
+      const rising = cop.timer <= 0;
+      cop.fall = Math.min(1, cop.fall + dt * 2.2);
+      const tipped = cop.fall * cop.fall;
+      cop.tilt.rotation[cop.fallWay[0]] = cop.fallWay[1] * Math.PI / 2 * tipped;
+      cop.tilt.position.y = 0.12 * tipped;
+      for (const { bone, from, to: limp } of cop.deathPose) bone.quaternion.slerpQuaternions(from, limp, tipped);
+      if (rising) {
+        cop.tilt.rotation.set(0, 0, 0);
+        cop.tilt.position.y = 0;
+        for (const { bone, from } of cop.deathPose) bone.quaternion.copy(from);
+        if (!cop.getUp) { cop.group.position.set(cop.post.x, 0, cop.post.z); cop.health = OFFICER_HEALTH; } // (only thrown down: he gets up where he is)
+        Object.assign(cop, { deathPose: null, state: 'idle', fall: 0, getUp: false });
+      }
+      continue;
+    }
+    cop.state = 'idle';
     const position = cop.group.position;
     let pace = 0, heading = cop.post.facing;
     if (police?.wanted) {
@@ -836,7 +857,7 @@ function makeDeathPose(npc) {
 
 // Make an NPC angry: they run at the player to hit him.
 export function provokeNpc(npc) {
-  if (npc.state === 'dead' || npc.state === 'strike') return;
+  if (npc.state === 'dead' || npc.state === 'strike' || npc.officer) return; // (officers just arrest you)
   if (npc.gang) { npc.crew.alert = 25; return; } // hurt one and the whole gang turns on you
   npc.state = 'chase';
   npc.timer = 12; // seconds before they give up the chase
@@ -850,7 +871,7 @@ export function hitNpc(npc, shooterPosition, damage = DAMAGE) {
     const position = npc.group.position;
     npc.state = 'dead';
     npc.fall = 0;
-    npc.timer = npc.gang ? GANG_RESPAWN : RESPAWN_TIME;
+    npc.timer = npc.gang ? GANG_RESPAWN : npc.officer ? OFFICER_RESPAWN : RESPAWN_TIME;
     if (npc.gang) { npc.crew.alert = 25; npc.aiming = false; npc.flash.visible = false; }
     // Face the shooter, then fall a random way in a random heap.
     npc.group.rotation.y = Math.atan2(shooterPosition.x - position.x, shooterPosition.z - position.z);

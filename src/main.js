@@ -23,6 +23,7 @@ import { createGym, updateGym, stationNear, TRAINING } from './gym.js';
 import { createLake, updateLake, boatNear, landingSpot, SEAT } from './lake.js';
 import { createAlligators, updateAlligators } from './alligator.js';
 import { createTruck, updateTruck, setEngine } from './truck.js';
+import { createCars } from './cars.js';
 import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke, emitBloodMist } from './gun.js';
 import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, playStrike, findGrab, neckSpot, strangle, CHOKE_TIME, floorNpc, reviveNpc, debug as npcDebug } from './npc.js';
@@ -157,6 +158,7 @@ let money = saved.money ?? 1500;   // the cash in his pocket: he loses it if he 
 let bank = saved.bank ?? 0;       // what he has paid in at a cash machine: that is safe
 const owned = new Set(saved.owned || []);
 if (new URLSearchParams(location.search).has('gun')) owned.add('pistol'); // test views start armed
+owned.add('camo'); // his own special rifle: nobody sells it and nobody else has one. Press 7 to carry it.
 const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, bank, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests, compDay })); } catch { /* no storage */ } };
 
 const overlay = (css) => { const el = document.createElement('div'); el.style.cssText = `position:fixed;pointer-events:none;font-family:system-ui,sans-serif;${css}`; document.body.appendChild(el); return el; };
@@ -675,7 +677,7 @@ function updatePolice(dt) {
   if (testView.has('jail') && !updatePolice.done) { updatePolice.done = true; jailed = 999; lockUp = testView.get('jail') === 'miami' ? miamiPD.userData : policeStation.userData; player.group.position.copy(lockUp.cell); }
   if (wanted > 0) {
     // The search only winds down while no officer is close.
-    const close = (npcs.officers || []).some((cop) => near(cop.group.position.x, cop.group.position.z, 25));
+    const close = (npcs.officers || []).some((cop) => cop.state !== 'dead' && near(cop.group.position.x, cop.group.position.z, 25));
     if (!close) wanted -= dt;
     if (wanted <= 0) { wanted = 0; toast('The police have lost you.'); }
   }
@@ -1368,7 +1370,7 @@ const canMelee = () => !driving && !boating && player.downTime < 0 && jailed <= 
 function meleeTarget(reach) {
   const at = player.group.position, facing = player.group.rotation.y;
   let target = null;
-  for (const npc of npcs) {
+  for (const npc of targets()) {
     if (npc.state === 'dead') continue;
     const dx = npc.group.position.x - at.x, dz = npc.group.position.z - at.z, distance = Math.hypot(dx, dz);
     if (distance < reach && Math.abs(npc.group.position.y - at.y) < 1 && (dx * Math.sin(facing) + dz * Math.cos(facing)) / distance > 0.4) { reach = distance; target = npc; }
@@ -1528,11 +1530,39 @@ if (new URLSearchParams(location.search).has('gator')) { // ?gator puts one on t
 
 // The pickup truck, parked on the pavement beside his building in Miami. F gets in and out.
 const truckStart = (new URLSearchParams(location.search).get('truckat') || '677,-11.5,1.5708').split(',').map(Number); // ?truckat=x,z,heading
-const truck = createTruck(scene, renderer, truckStart[0], truckStart[1], truckStart[2]);
+const homeTruck = Object.assign(createTruck(scene, renderer, truckStart[0], truckStart[1], truckStart[2]), { name: 'truck', own: true });
+// Other people's cars, parked about the place. They drive like the truck, but taking one is theft.
+const vehicles = [homeTruck, ...createCars(scene, renderer)];
+// The patrol cars outside both police stations can be taken too.
+for (const station of [policeStation, miamiPD]) for (const { car, block } of station.userData.cars) {
+  scene.attach(car); // lift it out of the station so it can drive away
+  const heading = 2 * Math.atan2(car.quaternion.y, car.quaternion.w); // which way it points (it only ever turns about the upright)
+  car.rotation.order = 'YXZ';
+  car.rotation.set(0, heading, 0);
+  vehicles.push({ group: car, spinners: [], steerers: [], heading, speed: 0, steer: 0, engine: null, topSpeed: 38, name: 'police car', block });
+}
+// Everyone who can be shot, stabbed, punched or kicked: ordinary people, gangs, boxers and the police.
+let targetList = [];
+const targets = () => {
+  const count = npcs.length + (npcs.officers?.length || 0);
+  if (targetList.length !== count) targetList = [...npcs, ...(npcs.officers || [])];
+  return targetList;
+};
+let truck = homeTruck; // whichever of them he is driving, or drove last
+const nearVehicle = () => {
+  let best = null, nearest = 3.4;
+  for (const one of vehicles) {
+    const distance = Math.hypot(player.group.position.x - one.group.position.x, player.group.position.z - one.group.position.z);
+    if (distance < nearest) { nearest = distance; best = one; }
+  }
+  return best;
+};
 const speedo = document.getElementById('speed');
 let driving = false;
 function toggleDriving() {
-  const here = player.group.position, there = truck.group.position;
+  const here = player.group.position;
+  if (!driving && !boating) truck = nearVehicle() || truck; // the one he is standing beside
+  const there = truck.group.position;
   // Boats: F gets in when next to one, and out again at the jetty or the bank.
   if (boating) {
     if (Math.abs(boating.speed) > 4) return toast('Slow down first: press Space to cut the throttle, then F.'); // too fast to get out
@@ -1570,6 +1600,12 @@ function toggleDriving() {
     setEngine(truck, true);
     player.group.visible = false;
     gun.equipped = false;
+    if (truck.block) truck.block.height = 0; // nothing is parked there any more
+    if (!truck.own && !truck.stolen) { // somebody else's car
+      truck.stolen = true;
+      commitCrime();
+      toast(`You steal the ${truck.name}! The police are on their way.`);
+    }
   }
 }
 
@@ -1596,6 +1632,8 @@ const crosshair = document.getElementById('crosshair');
 let aimHeld = false;   // right mouse button is down
 let aimTimer = 0;      // keeps the arm up for a moment after a shot
 let shotQueued = false;
+let burstLeft = 0, burstWait = 0; // rounds still to come in a burst from the camo rifle
+const toStaff = new THREE.Vector3();
 let facingLocked = false; // V: he stops turning, so the camera can stay on his face
 // Punches alternate: a quick left jab, then a hard right. Each has a duration (seconds) and a damage (out of 100).
 const PUNCHES = { left: { time: 0.19, damage: 20 }, right: { time: 0.32, damage: 50 } };
@@ -1622,6 +1660,7 @@ window.addEventListener('keydown', (e) => {
     else if (!shopOpen && e.code === 'Digit6') eat();
     else if (pick && shopOpen) buy(pick);                                       // buying at Big Al's counter
     else if (pick && owned.has(pick)) { setWeapon(gun, pick); gun.equipped = true; } // switching between guns he owns
+    else if (e.code === 'Digit7') { setWeapon(gun, 'camo'); gun.equipped = true; toast('Your camo assault rifle. Five rounds a burst, and nobody gets up again.'); }
     if (e.code === 'KeyK') toggleKnife(); // draw or put away the knife
     if (e.code === 'KeyX') startKick();
     if (e.code === 'KeyZ') startThrow();
@@ -1778,6 +1817,7 @@ function onStrike(kind, npc) {
   if (testView.has('slap')) console.log(`TEST ${kind} landed`);
 }
 if (testView.has('gun')) gun.equipped = true;
+if (testView.get('gun') === 'camo') setWeapon(gun, 'camo'); // ?gun=camo starts with the special rifle
 if (testView.has('gunshow')) { // a big copy of the gun, side-on, for checking the model
   const display = createDisplayGun(renderer);
   display.scale.setScalar(5);
@@ -1832,7 +1872,7 @@ function step(dt) {
       punchLanded = true;
       const at = player.group.position, facing = player.group.rotation.y;
       let target = null, reach = 1.6;
-      for (const npc of npcs) {
+      for (const npc of targets()) {
         if (npc.state === 'dead') continue;
         const dx = npc.group.position.x - at.x, dz = npc.group.position.z - at.z, distance = Math.hypot(dx, dz);
         if (distance < reach && (dx * Math.sin(facing) + dz * Math.cos(facing)) / distance > 0.4) { reach = distance; target = npc; }
@@ -1891,7 +1931,7 @@ function step(dt) {
     reach = wall;
     hitsGround = false;
   }
-  const struck = findNpcHit(npcs, camera.position, aimDir, reach);
+  const struck = findNpcHit(targets(), camera.position, aimDir, reach);
   if (struck) {
     reach = struck.distance;
     hitsGround = false;
@@ -1909,8 +1949,21 @@ function step(dt) {
   input.aim = !driving && !boating && gun.equipped && (aimHeld || aimTimer > 0 || testView.has('aim'));
   input.aimPoint = aimPoint;
   input.kick = gun.kick;
-  if ((shotQueued || testView.has('fire')) && player.aim > 0.8 && fireGun(gun, aimPoint, hitsGround)) {
+  // The camo rifle fires five rounds each time: the first here, and four more close behind it.
+  burstWait -= dt;
+  const nextRound = burstLeft > 0 && burstWait <= 0 && gun.kind === 'camo' && gun.equipped;
+  if (nextRound) { burstLeft--; burstWait = 0.07; gun.cooldown = 0; }
+  if (gun.kind !== 'camo' || !gun.equipped) burstLeft = 0;
+  if ((nextRound || ((shotQueued || testView.has('fire')) && burstLeft <= 0 && player.aim > 0.8)) && fireGun(gun, aimPoint, hitsGround)) {
     shotQueued = false;
+    if (gun.kind === 'camo' && !nextRound) { burstLeft = 4; burstWait = 0.07; }
+    // It also drops shop staff, guards and prisoners: whoever is nearest the line of fire.
+    const staff = gun.kind === 'camo' && !(struck && struck.distance <= gun.range) ? (npcs.cashiers || []).find((one) => {
+      if (one.dead > 0) return false;
+      const along = toStaff.set(one.group.position.x, one.group.position.y + 1.1, one.group.position.z).sub(camera.position).dot(aimDir);
+      return along > 0 && along < reach + 0.6 && toStaff.addScaledVector(aimDir, -along).length() < 0.55;
+    }) : null;
+    if (staff) { strangle(staff, player.group.position); hitFlash = 0.15; commitCrime(); }
     if (lizard && lizard.distance <= gun.range) {
       killIguana(lizard.iguana);
       hitFlash = 0.15;
@@ -2043,7 +2096,7 @@ function step(dt) {
   updatePoliceStation(policeStation, player.group.position, dt);
   updatePoliceStation(miamiPD, player.group.position, dt);
   updateGym(gym, player.group.position, dt, time);
-  const byTruck = !driving && Math.hypot(player.group.position.x - truck.group.position.x, player.group.position.z - truck.group.position.z) < 3.4;
+  const besideCar = !driving ? nearVehicle() : null, byTruck = !!besideCar;
   const byFridge = !driving && !boating && nearFridge(house, player.group.position);
   const byBoat = !driving && !boating && !!(boatNear(lake, player.group.position) || jetSkiNear(seaParts, player.group.position) || fishingBoatNear(seaParts, player.group.position));
   if (boating && !boating.jetSki) speedo.textContent += ` · throttle ${Math.round((boating.throttle || 0) * 100)}%`;
@@ -2051,6 +2104,7 @@ function step(dt) {
   const byAl = !driving && !boating && atCounter(), byCash = !driving && !boating && atCashMachine();
   if (shopOpen && !byAl) setShop(false); // walking away ends the conversation
   if (atmOpen && !byCash) setAtm(false);
+  if (testView.has('steal') && !driving && !updatePolice.stole && player.bones) { updatePolice.stole = true; toggleDriving(); console.log(`TEST steal: driving=${driving} ${truck.name} wanted=${wanted > 0}`); } // ?steal takes the nearest car
   if (testView.has('atm') && byCash && !atmOpen && !updatePolice.atmShown) { updatePolice.atmShown = true; setAtm(true); } // ?atm opens it straight away
   const byMart = !driving && !boating && atMartCounter();
   const byBed = !driving && !boating && atBed();
@@ -2092,7 +2146,7 @@ function step(dt) {
   if (tipsy > 0) cam.yaw += Math.sin(time * 0.7) * 0.12 * Math.min(1, tipsy / 5) * dt; // the world drifts about
   if (energy > 0) { energy -= dt; if (energy <= 0) player.boost = 1; }
   if (testView.has('shop') && byAl && !shopOpen) setShop(true); // ?shop opens Big Al's menu straight away
-  usePrompt.textContent = canLand ? (boating.fishing ? 'Press F to leave the wheel' : 'Press F to get out') : byBoat ? (fishingBoatNear(seaParts, player.group.position) ? 'Press F to take the wheel' : jetSkiNear(seaParts, player.group.position) ? 'Press F to ride the jet ski' : 'Press F to take the boat out') : byTruck ? 'Press F to drive the truck'
+  usePrompt.textContent = canLand ? (boating.fishing ? 'Press F to leave the wheel' : 'Press F to get out') : byBoat ? (fishingBoatNear(seaParts, player.group.position) ? 'Press F to take the wheel' : jetSkiNear(seaParts, player.group.position) ? 'Press F to ride the jet ski' : 'Press F to take the boat out') : byTruck ? (besideCar.own ? 'Press F to drive your truck' : besideCar.stolen ? `Press F to drive the ${besideCar.name}` : `Press F to steal the ${besideCar.name}`)
     : byBed ? (isNight() ? 'Press E to sleep until morning' : 'You can sleep here once it gets dark (6 in the evening)') : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to use the cash machine' : 'Press E to open or close the fridge';
   usePrompt.style.display = ((byTruck && !boating) || byFridge || byBoat || canLand || byCash || byAl || byMart || gymSpot || byBed) && !shopOpen && !martOpen && !atmOpen ? 'block' : 'none';
   const fishPrompt = fishingState?.phase === 'bite' ? 'A BITE! Press E now!'

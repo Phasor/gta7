@@ -372,9 +372,10 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   }
   // Swimming: he leans forward into a crawl when moving and treads water upright when still.
   player.swimTilt = (player.swimTilt || 0) + (player.swim * (moving ? 1 : 0.15) - (player.swimTilt || 0)) * Math.min(1, 3 * dt);
-  group.rotation.x += 1.15 * player.swimTilt;
+  group.rotation.x += 1.22 * player.swimTilt;
   // The ground, a raised floor such as inside the house, or the lake bed (he floats in deep water).
-  const floor = depth > 0 ? -Math.min(depth, 1.25) + player.swimTilt : floorAt(group.position);
+  // Swimming along he lies low in the water, with only his head, shoulders and back above it.
+  const floor = depth > 0 ? -Math.min(depth, 1.25) + 0.9 * player.swimTilt : floorAt(group.position);
   if (player.onGround) {
     group.position.y += (floor - group.position.y) * Math.min(1, 18 * dt); // step up or down
   } else {
@@ -465,9 +466,30 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   if (player.swim > 0.01) {
     player.swimTime = (player.swimTime || 0) + dt * (moving ? 5 : 2);
     sideways.set(1, 0, 0).applyQuaternion(group.quaternion);
-    const reach = player.swim * (0.5 + 2.0 * player.swimTilt);
-    turnBone(b.armL, sideways, -reach + Math.sin(player.swimTime) * 0.8 * player.swim);
-    turnBone(b.armR, sideways, -reach - Math.sin(player.swimTime) * 0.8 * player.swim);
+    const s = player.swim, t = player.swimTime;
+    const crawl = Math.min(1, Math.max(0, (player.swimTilt - 0.3) / 0.5)); // 0 treading water, 1 swimming along
+    const tread = 1 - crawl;
+    forwards.set(0, 0, 1).applyQuaternion(group.quaternion);
+    // Front crawl: each arm goes right round in turn. It reaches out ahead, pulls down and back
+    // through the water, then lifts out behind him and swings forward over the top.
+    // Treading water: both arms held out in front, sculling from side to side.
+    for (const [arm, fore, side, lag] of [[b.armL, b.foreArmL, 1, 0], [b.armR, b.foreArmR, -1, Math.PI]]) {
+      const round = Math.atan2(Math.sin(t + lag), Math.cos(t + lag));          // -pi..pi, round and round
+      turnBone(arm, sideways, s * (crawl * round + tread * (-0.95 + Math.sin(t * 1.3 + lag) * 0.12)));
+      turnBone(arm, forwards, s * tread * side * (0.45 + Math.sin(t * 1.3) * 0.3));
+      const overTheTop = Math.max(0, Math.sin(t + lag - 1.9));                 // the elbow bends as the arm comes forward out of the water
+      turnBone(fore, sideways, -s * (crawl * 0.9 * overTheTop + tread * 0.35));
+    }
+    // Legs: a quick flutter kick when swimming along, a slow pedalling when treading water.
+    for (const [thigh, shin, lag] of [[b.thighL, b.shinL, 0], [b.thighR, b.shinR, Math.PI]]) {
+      const kick = Math.sin(t * 2.2 + lag);
+      turnBone(thigh, sideways, s * (crawl * kick * 0.32 + tread * (-0.35 + Math.sin(t * 1.5 + lag) * 0.3)));
+      turnBone(shin, sideways, s * (crawl * (0.18 + 0.18 * kick) + tread * (0.55 + Math.cos(t * 1.5 + lag) * 0.3)));
+    }
+    // He holds his head up out of the water to see where he is going, and his back arches a little.
+    turnBone(b.head, sideways, -0.75 * s * crawl);
+    turnBone(b.spine2, sideways, -0.22 * s * crawl);
+    turnBone(b.spine, forwards, s * crawl * Math.sin(t) * 0.16);               // the shoulders roll with each stroke
   }
 
   // On the floor and getting up.

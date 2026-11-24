@@ -105,12 +105,13 @@ export function createMiamiPD(scene, x, z, streetEndZ) {
   const gap = Math.abs(streetEndZ - (z + D / 2));
   block(station, m.asphalt, W + 4, 0.06, gap + 0.2, 0, 0.03, D / 2 + gap / 2).castShadow = false;
   block(station, m.concrete, 2.6, 0.07, gap - 1.4, 0, 0.035, D / 2 + 1.6 + (gap - 1.4) / 2).castShadow = false;
+  const cars = [];
   for (const [cx, turn] of [[-6.4, 0.08], [6.4, -0.1]]) {
     const car = makePatrolCar('MIAMI P.D.  ·  UNIT 7', '7');
     car.position.set(cx, 0.04, D / 2 + gap / 2 + 0.3);
     car.rotation.y = Math.PI + turn;
     station.add(car);
-    solid(cx, D / 2 + gap / 2 + 0.3, 2.2, 4.8, 1.7);
+    cars.push({ car, block: solid(cx, D / 2 + gap / 2 + 0.3, 2.2, 4.8, 1.7) });
     for (const edge of [-1.5, 1.5]) block(station, m.white, 0.1, 0.005, 5, cx + edge, 0.066, D / 2 + gap / 2 + 0.3).castShadow = false;
   }
   solid(-9.8, D / 2 + 1.2, 0.2, 0.2, 9);
@@ -247,7 +248,7 @@ export function createMiamiPD(scene, x, z, streetEndZ) {
   clearings[45].set(x - W / 2 - 2.2, z - D / 2 - 0.3, x + W / 2 + 2.2, streetEndZ + 0.1);
 
   station.userData = {
-    doors, open: 0,
+    cars, doors, open: 0,
     doorSpot: new THREE.Vector3(x, 0, z + fz),
     officer: { x: x - 2.5, z: z + 0.45, facing: 0, uniform: true },                 // the desk officer downstairs
     guard: { x: x - 3.0, y: F2, z: z + 4.3, facing: Math.PI, uniform: true },       // the guard upstairs, watching the cells

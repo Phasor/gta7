@@ -168,12 +168,13 @@ export function createPoliceStation(scene, x, z, roadEdgeZ) {
   const gap = Math.abs(roadEdgeZ - (z + D / 2));
   block(station, m.asphalt, W + 4, 0.05, gap + 0.2, 0, 0.025, D / 2 + gap / 2).castShadow = false;
   block(station, m.concrete, 2.6, 0.06, gap - 1.4, 0, 0.03, D / 2 + 1.6 + (gap - 1.4) / 2).castShadow = false;
+  const cars = []; // the patrol cars, and the solid block where each is parked (so it can be driven off)
   for (const [cx, turn] of [[-5.6, 0.12], [5.4, -0.1]]) {
     const car = makePatrolCar();
     car.position.set(cx, 0.03, D / 2 + gap / 2 + 0.2);
     car.rotation.y = Math.PI + turn; // parked nose-in, facing the building
     station.add(car);
-    solid(cx, D / 2 + gap / 2 + 0.2, 2.2, 4.8, 1.7);
+    cars.push({ car, block: solid(cx, D / 2 + gap / 2 + 0.2, 2.2, 4.8, 1.7) });
     block(station, m.white, 0.1, 0.005, 5, cx - 1.5, 0.056, D / 2 + gap / 2 + 0.2).castShadow = false;
     block(station, m.white, 0.1, 0.005, 5, cx + 1.5, 0.056, D / 2 + gap / 2 + 0.2).castShadow = false;
   }
@@ -282,7 +283,7 @@ export function createPoliceStation(scene, x, z, roadEdgeZ) {
   addInterior(x - W / 2 + 0.2, x + W / 2 - 0.2, z - D / 2 + 0.2, z + D / 2 - 0.2, top);
   clearings[40].set(x - W / 2 - 2.1, z - D / 2 - 0.3, x + W / 2 + 2.1, Math.max(roadEdgeZ, z + D / 2) + 0.1);
 
-  station.userData = { doors, doorSpot: new THREE.Vector3(x, 0, z + fz), open: 0,
+  station.userData = { cars, doors, doorSpot: new THREE.Vector3(x, 0, z + fz), open: 0,
     officer: { x: x - 1.0, z: z + 0.25, facing: 0, uniform: true },   // the desk officer, behind the front desk
     // Two patrol officers stand guard outside, either side of the path to the door.
     posts: [{ x: x - 2.0, z: z + D / 2 + 2.6, facing: 0 }, { x: x + 2.0, z: z + D / 2 + 2.6, facing: 0 }],

@@ -410,7 +410,62 @@ const WEAPON_STATS = {
   pistol: { interval: 0.32, damage: 34, range: 300, muzzle: [0, 0.099, 0.186] },
   shotgun: { interval: 0.9, damage: 100, range: 25, muzzle: [0, 0.09, 0.82] },   // one shot, but only up close
   rifle: { interval: 1.2, damage: 100, range: 300, muzzle: [0, 0.09, 0.95] },    // one shot at any distance
+  camo: { interval: 0.55, damage: 1e6, range: 400, muzzle: [0, 0.088, 0.9] },     // the special one: five-round bursts, and nobody survives a hit
 };
+
+// Green camouflage paint: blotches of four greens and a brown.
+function camoPaint() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#4f6b34';
+  ctx.fillRect(0, 0, 128, 128);
+  const shades = ['#2f4422', '#6f8a48', '#1f2d18', '#5a4a2c', '#3d5a2a'];
+  for (let i = 0; i < 70; i++) {
+    ctx.fillStyle = shades[i % shades.length];
+    ctx.beginPath();
+    ctx.ellipse(Math.random() * 128, Math.random() * 128, 6 + Math.random() * 14, 4 + Math.random() * 9, Math.random() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  return new THREE.MeshStandardMaterial({ map: texture, roughness: 0.7, metalness: 0.15 });
+}
+
+// The special assault rifle: a long receiver, a gas tube over the barrel, a tall front
+// sight, a curved magazine and a solid stock, all in green camouflage.
+function makeCamoRifle() {
+  const group = new THREE.Group();
+  const camo = camoPaint();
+  const black = new THREE.MeshStandardMaterial({ color: 0x161718, roughness: 0.45, metalness: 0.5 });
+  const part = (material, w, h, d, y, z, tilt = 0) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+    mesh.position.set(0, y, z);
+    mesh.rotation.x = tilt;
+    mesh.castShadow = true;
+    group.add(mesh);
+    return mesh;
+  };
+  part(camo, 0.05, 0.075, 0.34, 0.075, 0.08);            // receiver
+  part(camo, 0.045, 0.02, 0.3, 0.122, 0.08);             // top cover
+  part(camo, 0.05, 0.055, 0.24, 0.07, 0.37);             // handguard
+  part(camo, 0.034, 0.03, 0.24, 0.115, 0.37);            // gas tube
+  part(black, 0.022, 0.022, 0.42, 0.088, 0.68);          // barrel
+  part(black, 0.03, 0.03, 0.06, 0.088, 0.88);            // muzzle brake
+  part(black, 0.014, 0.07, 0.02, 0.125, 0.8);            // front sight post
+  part(black, 0.036, 0.02, 0.03, 0.155, 0.8);
+  part(black, 0.03, 0.03, 0.04, 0.14, 0.2);              // rear sight
+  part(camo, 0.045, 0.1, 0.34, 0.055, -0.26, 0.1);       // stock
+  part(black, 0.047, 0.12, 0.03, 0.045, -0.43, 0.1);     // butt plate
+  part(camo, 0.04, 0.11, 0.05, -0.01, -0.03, -0.25);     // pistol grip
+  part(black, 0.012, 0.012, 0.09, 0.02, 0.05);           // trigger guard
+  // The curved magazine: three short sections, each tipped a little further forward.
+  part(camo, 0.036, 0.08, 0.07, 0.0, 0.17, -0.12);
+  part(camo, 0.036, 0.08, 0.07, -0.07, 0.185, -0.3);
+  part(camo, 0.036, 0.07, 0.07, -0.13, 0.215, -0.5);
+  return group;
+}
 
 // A long gun held by its grip: the barrel points along +Z.
 function makeLongGun(kind) {
@@ -450,8 +505,9 @@ export function setWeapon(gun, kind) {
       pistol: gun.mesh.children.filter((part) => part !== gun.flash && part !== gun.flashLight),
       shotgun: [makeLongGun('shotgun')],
       rifle: [makeLongGun('rifle')],
+      camo: [makeCamoRifle()],
     };
-    gun.mesh.add(gun.models.shotgun[0], gun.models.rifle[0]);
+    gun.mesh.add(gun.models.shotgun[0], gun.models.rifle[0], gun.models.camo[0]);
   }
   for (const [name, parts] of Object.entries(gun.models)) for (const part of parts) part.visible = name === kind;
   const stats = WEAPON_STATS[kind];

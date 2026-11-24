@@ -123,12 +123,12 @@ const probe = new THREE.Vector3(), pushed = new THREE.Vector3();
 // input: { throttle: -1..1, steer: -1 (right) .. 1 (left), handbrake }
 export function updateTruck(truck, input, dt, halfMap) {
   // Speed up, slow down, or coast to a stop.
-  const speed = truck.speed;
-  if (input.throttle > 0) truck.speed += (speed < -0.2 ? 18 : 9 * (1 - speed / TOP_SPEED)) * dt;
+  const speed = truck.speed, top = truck.topSpeed || TOP_SPEED; // (the cars each have their own top speed)
+  if (input.throttle > 0) truck.speed += (speed < -0.2 ? 18 : 9 * (1 - speed / top)) * dt;
   else if (input.throttle < 0) truck.speed -= (speed > 0.5 ? 18 : 5 * (1 + speed / REVERSE_SPEED)) * dt;
   else truck.speed -= Math.sign(speed) * Math.min(Math.abs(speed), (1.5 + Math.abs(speed) * 0.25) * dt);
   if (input.handbrake) truck.speed -= Math.sign(truck.speed) * Math.min(Math.abs(truck.speed), 26 * dt);
-  truck.speed = THREE.MathUtils.clamp(truck.speed, -REVERSE_SPEED, TOP_SPEED);
+  truck.speed = THREE.MathUtils.clamp(truck.speed, -REVERSE_SPEED, top);
 
   // Steering: the faster it goes, the less the wheels can turn.
   const fullLock = 0.6 / (1 + Math.abs(truck.speed) * 0.09);
