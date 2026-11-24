@@ -410,7 +410,7 @@ const WEAPON_STATS = {
   pistol: { interval: 0.32, damage: 34, range: 300, muzzle: [0, 0.099, 0.186] },
   shotgun: { interval: 0.9, damage: 100, range: 25, muzzle: [0, 0.09, 0.82] },   // one shot, but only up close
   rifle: { interval: 1.2, damage: 100, range: 300, muzzle: [0, 0.09, 0.95] },    // one shot at any distance
-  camo: { interval: 0.55, damage: 1e6, range: 400, muzzle: [0, 0.088, 0.9] },     // the special one: five-round bursts, and nobody survives a hit
+  camo: { interval: 0.85, damage: 1e6, range: 400, muzzle: [0, 0.088, 0.9] },     // the special one: ten-round bursts, and nobody survives a hit
 };
 
 // Green camouflage paint: blotches of four greens and a brown.

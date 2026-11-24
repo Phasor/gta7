@@ -1660,7 +1660,7 @@ window.addEventListener('keydown', (e) => {
     else if (!shopOpen && e.code === 'Digit6') eat();
     else if (pick && shopOpen) buy(pick);                                       // buying at Big Al's counter
     else if (pick && owned.has(pick)) { setWeapon(gun, pick); gun.equipped = true; } // switching between guns he owns
-    else if (e.code === 'Digit7') { setWeapon(gun, 'camo'); gun.equipped = true; toast('Your camo assault rifle. Five rounds a burst, and nobody gets up again.'); }
+    else if (e.code === 'Digit7') { setWeapon(gun, 'camo'); gun.equipped = true; toast('Your camo assault rifle. Ten rounds a burst, and nobody gets up again.'); }
     if (e.code === 'KeyK') toggleKnife(); // draw or put away the knife
     if (e.code === 'KeyX') startKick();
     if (e.code === 'KeyZ') startThrow();
@@ -1949,14 +1949,14 @@ function step(dt) {
   input.aim = !driving && !boating && gun.equipped && (aimHeld || aimTimer > 0 || testView.has('aim'));
   input.aimPoint = aimPoint;
   input.kick = gun.kick;
-  // The camo rifle fires five rounds each time: the first here, and four more close behind it.
+  // The camo rifle fires ten rounds each time: the first here, and nine more close behind it.
   burstWait -= dt;
   const nextRound = burstLeft > 0 && burstWait <= 0 && gun.kind === 'camo' && gun.equipped;
   if (nextRound) { burstLeft--; burstWait = 0.07; gun.cooldown = 0; }
   if (gun.kind !== 'camo' || !gun.equipped) burstLeft = 0;
   if ((nextRound || ((shotQueued || testView.has('fire')) && burstLeft <= 0 && player.aim > 0.8)) && fireGun(gun, aimPoint, hitsGround)) {
     shotQueued = false;
-    if (gun.kind === 'camo' && !nextRound) { burstLeft = 4; burstWait = 0.07; }
+    if (gun.kind === 'camo' && !nextRound) { burstLeft = 9; burstWait = 0.07; }
     // It also drops shop staff, guards and prisoners: whoever is nearest the line of fire.
     const staff = gun.kind === 'camo' && !(struck && struck.distance <= gun.range) ? (npcs.cashiers || []).find((one) => {
       if (one.dead > 0) return false;
