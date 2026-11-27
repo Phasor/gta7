@@ -31,7 +31,7 @@ const PARKED = [
 
 let reflections = null;
 
-function buildCar(renderer, style, colour) {
+export function buildCar(renderer, style, colour) {
   if (!reflections) { // shiny paint needs surroundings to reflect: made once and shared by every car
     const pmrem = new THREE.PMREMGenerator(renderer);
     reflections = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -131,7 +131,7 @@ function buildCar(renderer, style, colour) {
     spinners.push(wheel);
     if (front) steerers.push(pivot);
   }
-  return { group, spinners, steerers, speed: 0, steer: 0, engine: null, topSpeed: s.top };
+  return { group, spinners, steerers, speed: 0, steer: 0, engine: null, topSpeed: s.top, size: { hw: W / 2, hl: L / 2, deck } };
 }
 
 // Builds every parked car. Each can be driven exactly like the truck.

@@ -154,6 +154,7 @@ export function updateTruck(truck, input, dt, halfMap) {
     }
   }
   if (hit) truck.speed *= Math.max(0, 1 - 7 * dt);
+  truck.bump = hit ? Math.abs(speed) : 0; // how fast it was going when it hit something (for dents)
 
   const limit = halfMap - 3;
   position.x = THREE.MathUtils.clamp(position.x, -limit, limit);

@@ -95,6 +95,10 @@ const SOUNDS = {
   bark: () => { tone(260, 0.13, { type: 'sawtooth', to: 120, volume: 0.26 }); noise(0.12, { filter: 'bandpass', freq: 1000, q: 1, volume: 0.2 }); },
   yap: () => { for (const at of [0, 0.14]) { tone(640, 0.09, { type: 'sawtooth', to: 380, volume: 0.15, delay: at }); noise(0.07, { filter: 'bandpass', freq: 1700, q: 1.5, volume: 0.08, delay: at }); } },
   yelp: () => { tone(900, 0.12, { to: 1500, volume: 0.16 }); tone(1500, 0.22, { to: 650, volume: 0.14, delay: 0.11 }); },
+  horn: () => { tone(415, 0.42, { type: 'square', volume: 0.07 }); tone(523, 0.42, { type: 'square', volume: 0.06 }); },
+  crash: () => { noise(0.4, { freq: 1800, to: 200, volume: 0.4 }); tone(110, 0.3, { type: 'sawtooth', to: 45, volume: 0.3 }); noise(0.25, { filter: 'highpass', freq: 3500, volume: 0.12, delay: 0.05 }); },
+  snip: () => { tone(3200, 0.03, { type: 'square', volume: 0.05 }); tone(2400, 0.03, { type: 'square', volume: 0.05, delay: 0.07 }); },
+  wrench: () => { for (let i = 0; i < 5; i++) noise(0.05, { filter: 'bandpass', freq: 2600, q: 4, volume: 0.14, delay: i * 0.13 }); },
   megaphone: () => { for (const [at, pitch] of [[0, 620], [0.16, 830]]) tone(pitch, 0.14, { type: 'square', volume: 0.1, delay: at }); noise(0.5, { filter: 'bandpass', freq: 1500, q: 2.5, volume: 0.06, delay: 0.3 }); },
   choke: () => { noise(0.32, { filter: 'bandpass', freq: 420 + Math.random() * 200, q: 3, volume: 0.1, attack: 0.05 }); tone(150, 0.3, { type: 'sawtooth', to: 95, volume: 0.05, attack: 0.05 }); }, // a strangled gasp
   cap: () => { noise(0.05, { filter: 'highpass', freq: 2500, volume: 0.2 }); tone(700, 0.09, { to: 1800, volume: 0.12 }); tone(2400, 0.05, { type: 'square', volume: 0.04, delay: 0.45 }); }, // a bottle cap coming off, then landing

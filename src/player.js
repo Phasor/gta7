@@ -377,7 +377,7 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   // Swimming along he lies low in the water, with only his head, shoulders and back above it.
   // Diving: out in the sea, where it is deep enough, holding C takes him down toward the bottom
   // and Space brings him back up. (input.surface: he is out of breath and has to come up.)
-  const deepest = Math.max(0, seaBedAt(group.position) - 1.75);
+  const deepest = Math.max(0, seaBedAt(group.position) - 1.3);
   const goingDown = input.crouch && !input.surface ? 1.8 : 0, goingUp = input.jump || input.surface ? 2.6 : 0;
   player.dive = swimming && deepest > 0 ? THREE.MathUtils.clamp((player.dive || 0) + (goingDown - goingUp) * dt, 0, deepest) : Math.max(0, (player.dive || 0) - 3 * dt);
   const floor = depth > 0 ? -Math.min(depth, 1.25) + 0.9 * player.swimTilt - player.dive : floorAt(group.position);

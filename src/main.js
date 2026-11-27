@@ -27,6 +27,8 @@ import { createCars } from './cars.js';
 import { createSeaLife, updateSeaLife } from './sealife.js';
 import { createBank, setVaultDoor, VAULT_PEOPLE, portrait } from './bank.js';
 import { createDogs, updateDogs, findDogHit, dogNear, hurtDog, patDog } from './dogs.js';
+import { createTraffic, updateTraffic } from './traffic.js';
+import { createMechanic, createBarber, HAIRCUTS, makeHair, makeHat } from './brewst.js';
 import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt, seaBedAt } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke, emitBloodMist } from './gun.js';
 import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, playStrike, findGrab, neckSpot, strangle, CHOKE_TIME, floorNpc, reviveNpc, speeches, speak, findListener, replyTo, debug as npcDebug } from './npc.js';
@@ -175,7 +177,7 @@ let bank = saved.bank ?? 0;       // what he has paid in at a cash machine: that
 const owned = new Set(saved.owned || []);
 if (new URLSearchParams(location.search).has('gun')) owned.add('pistol'); // test views start armed
 owned.add('camo'); // his own special rifle: nobody sells it and nobody else has one. Press 7 to carry it.
-const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, bank, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests, compDay, job })); } catch { /* no storage */ } };
+const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, bank, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests, compDay, job, hair: hairKey })); } catch { /* no storage */ } };
 
 const overlay = (css) => { const el = document.createElement('div'); el.style.cssText = `position:fixed;pointer-events:none;font-family:system-ui,sans-serif;${css}`; document.body.appendChild(el); return el; };
 const moneyEl = overlay('right:18px;top:14px;font-weight:bold;font-size:24px;color:#d8f0c0;background:rgba(30,45,25,0.7);padding:6px 14px;border-radius:8px');
@@ -1470,7 +1472,7 @@ function landBlow(target, damage, shove) {
   if (!target.gang && !inRing(target)) commitCrime();
 }
 function updateMelee(dt, input) {
-  if (seaTrouble) Object.assign(input, { x: 0, z: 0, sprint: false, jump: false, crouch: false }); // in trouble in the sea: he can't swim on
+  if (seaTrouble || trim) Object.assign(input, { x: 0, z: 0, sprint: false, jump: false, crouch: false, lockFacing: true }); // in trouble in the sea: he can't swim on
   if (testView.has('kick')) input.kick = 1; // ?kick holds the leg out, for checking the pose
   if (kickTime > 0) {
     kickTime -= dt;
@@ -1522,7 +1524,7 @@ const chatBox = document.createElement('input');
 chatBox.type = 'text';
 chatBox.maxLength = 80;
 chatBox.placeholder = 'Type what you want to say, then press Enter  (Esc to cancel)';
-chatBox.style.cssText = 'display:none;position:fixed;left:50%;bottom:150px;transform:translateX(-50%);width:440px;max-width:80%;font:16px system-ui,sans-serif;padding:10px 13px;border-radius:9px;border:2px solid #f3e6c0;background:rgba(28,34,22,0.96);color:#f3e9d2;outline:none';
+chatBox.style.cssText = 'display:none;position:fixed;left:50%;bottom:200px;transform:translateX(-50%);width:440px;max-width:80%;font:16px system-ui,sans-serif;padding:10px 13px;border-radius:9px;border:2px solid #f3e6c0;background:rgba(28,34,22,0.96);color:#f3e9d2;outline:none';
 document.body.appendChild(chatBox);
 let chatOpen = false, chatWith = null, talkable = null, me = null;
 function openChat(who) {
@@ -1581,7 +1583,7 @@ function updateTalk(dt) {
     setTimeout(() => {
       for (let frame = 0; frame < Number(testView.get('sim')); frame++) step(1 / 30);
       const p = player.group.position;
-      console.log(`TEST sim: cam y ${camera.position.y.toFixed(1)} at ${p.x.toFixed(0)},${p.y.toFixed(1)},${p.z.toFixed(0)} health ${Math.round(health)} stars ${stars} resisting ${resisting} cash ${money} downed ${downed} trouble ${!!seaTrouble} flag ${flagShown} | ${toastEl.textContent}`);
+      console.log(`TEST sim: cam y ${camera.position.y.toFixed(1)} at ${p.x.toFixed(0)},${p.y.toFixed(1)},${p.z.toFixed(0)} traffic ${traffic.filter((car) => car.active).length} dents ${truck.dents || 0} health ${Math.round(health)} stars ${stars} resisting ${resisting} cash ${money} downed ${downed} trouble ${!!seaTrouble} flag ${flagShown} | ${toastEl.textContent}`);
     }, 0);
   }
   if (chatOpen) { // while he is typing, nothing else happens, and they wait to hear it
@@ -1709,6 +1711,15 @@ function underwaterLook(dt) {
   breathEl.style.display = breath < BREATH - 0.2 ? 'block' : 'none';
   breathBar.style.width = `${(breath / BREATH) * 100}%`;
   // The camera below the surface of the sea: thick blue-green water all round.
+  // A hint, so he knows he can go under (and why not, when he can't).
+  const swimmingNow = !driving && !boating && jailed <= 0 && waterDepthAt(player.group.position) > 0.95 && !seaTrouble;
+  if (swimmingNow && usePrompt.style.display !== 'block') {
+    const inSeaNow = player.group.position.x > seaParts.shoreX, deepEnough = seaBedAt(player.group.position) > 1.6;
+    usePrompt.textContent = !inSeaNow ? 'The lake is too shallow and murky to dive in. Try the sea.'
+      : !deepEnough ? 'Swim further out to dive: it is too shallow here'
+      : headUnder ? 'Hold C to go deeper  ·  Space to come up' : 'Hold C to dive under the water';
+    usePrompt.style.display = 'block';
+  }
   const under = camera.position.y < 0.17 && camera.position.x > seaParts.shoreX;
   if (under) {
     if (!wasUnder) { fogKeep.copy(scene.fog.color); sfx('splash'); camera.far = 76; camera.updateProjectionMatrix(); }
@@ -1863,6 +1874,192 @@ function updateJob(dt) {
     usePrompt.style.display = 'block';
   }
 }
+// --- Traffic, dents and the garage --------------------------------------------------------------------
+// Cars drive both ways along the main road. Hitting things in a car dents it, and every dent takes
+// a little off its top speed; badly dented, the engine smokes. Fix-It Garage on Brew St knocks
+// dents out at G$ 10 each.
+const traffic = createTraffic(scene, renderer);
+const garage = createMechanic(scene, 606, -44, Math.PI / 2);
+const barberShop = createBarber(scene, 643, -44, -Math.PI / 2);
+const DENT_PRICE = 10, MOST_DENTS = 12;
+const crumple = new THREE.MeshStandardMaterial({ color: 0x151617, roughness: 1 }), scuff = new THREE.MeshStandardMaterial({ color: 0x5a5d60, roughness: 0.9, metalness: 0.4 });
+function addDent(vehicle) {
+  vehicle.dentAt = gameTime;
+  sfx('crash');
+  if ((vehicle.dents || 0) >= MOST_DENTS) return;
+  vehicle.dents = (vehicle.dents || 0) + 1;
+  vehicle.dentMeshes ??= [];
+  const size = vehicle.size || (vehicle.own ? { hw: 1.0, hl: 2.75, deck: 1.25 } : { hw: 0.93, hl: 2.4, deck: 0.92 });
+  // Most dents are on the end that hit; some are down the sides.
+  const end = vehicle.speed >= 0 ? 1 : -1, onSide = vehicle.dents % 3 === 0, flank = Math.random() < 0.5 ? -1 : 1;
+  const dent = new THREE.Group();
+  const scrape = new THREE.Mesh(new THREE.CircleGeometry(0.3, 9), scuff), hollow = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 1), crumple);
+  scrape.scale.set(1.2 + Math.random() * 0.6, 0.7 + Math.random() * 0.4, 1);
+  hollow.scale.set(0.2 + Math.random() * 0.1, 0.13 + Math.random() * 0.08, 0.035);
+  hollow.position.z = 0.004;
+  dent.add(scrape, hollow);
+  const height = 0.55 + Math.random() * Math.max(0.1, size.deck - 0.7);
+  if (onSide) { dent.position.set(flank * (size.hw + 0.02), height, (Math.random() - 0.5) * size.hl * 1.4); dent.rotation.y = flank * Math.PI / 2; }
+  else { dent.position.set((Math.random() - 0.5) * size.hw * 1.5, height, end * (size.hl + 0.03)); dent.rotation.y = end > 0 ? 0 : Math.PI; }
+  dent.rotation.z = Math.random() * 3;
+  vehicle.group.add(dent);
+  vehicle.dentMeshes.push(dent);
+  vehicle.baseTop ??= vehicle.topSpeed || 27;
+  vehicle.topSpeed = vehicle.baseTop * (1 - Math.min(0.5, vehicle.dents * 0.05));
+}
+// A car stopped (or nearly) in the road right beside him: he pulls the driver out and it is his.
+function jackTraffic() {
+  const here = player.group.position;
+  const index = traffic.findIndex((car) => car.active && car.speed < 3.5 && Math.hypot(car.group.position.x - here.x, car.group.position.z - here.z) < 3.4);
+  if (index < 0) return;
+  const [car] = traffic.splice(index, 1);
+  traffic.add(); // another takes its place on the road
+  Object.assign(car, { heading: car.group.rotation.y, speed: 0, steer: 0, stolen: false, traffic: false, name: car.name });
+  vehicles.push(car);
+  toast(`You drag the driver out of the ${car.name}!`);
+}
+// The car that could be mended right now: the one he is driving (or standing beside), outside the garage.
+function mechanicJob() {
+  if (boating || !near(garage.bay.x, garage.bay.z, 9)) return null;
+  const car = driving ? truck : nearVehicle();
+  return car && Math.hypot(car.group.position.x - garage.bay.x, car.group.position.z - garage.bay.z) < 10 ? car : null;
+}
+function repairCar() {
+  const car = mechanicJob(), dents = car.dents || 0, bill = dents * DENT_PRICE;
+  if (!dents) return toast('Mick looks it over. "Not a mark on it. Come back when you have hit something."');
+  if (money < bill) return sfx('error'), toast(`Mick counts ${dents} dent${dents > 1 ? 's' : ''}: G$ ${bill}. You only have G$ ${money} on you.`);
+  money -= bill;
+  for (const dent of car.dentMeshes || []) car.group.remove(dent);
+  Object.assign(car, { dents: 0, dentMeshes: [], topSpeed: car.baseTop ?? car.topSpeed });
+  sfx('wrench');
+  sfx('buy');
+  showMoney(); persist();
+  toast(`Mick knocks out ${dents} dent${dents > 1 ? 's' : ''} for G$ ${bill}. Good as new.`);
+}
+let smokeTick = 0;
+function updateRoads(dt) {
+  if (!npcs.view) return;
+  const here = player.group.position, onFoot = !driving && !boating;
+  // What traffic has to stop for: him, every other car, and anybody walking in the road.
+  const blockers = onFoot ? [{ x: here.x, z: here.z, r: 0.7 }] : [];
+  for (const one of vehicles) blockers.push({ x: one.group.position.x, z: one.group.position.z, r: 2.3 });
+  for (const one of npcs) if (!one.away && one.state !== 'dead' && one.group.position.z > -7.6 && one.group.position.z < -1.4) blockers.push({ x: one.group.position.x, z: one.group.position.z, r: 0.5 });
+  updateTraffic(traffic, dt, npcs.view, blockers, (car) => { if (Math.hypot(car.group.position.x - here.x, car.group.position.z - here.z) < 45) sfx('horn'); });
+  for (const car of traffic) {
+    if (!car.active) continue;
+    const dx = here.x - car.group.position.x, dz = here.z - car.group.position.z;
+    if (onFoot && here.y < 1.5 && Math.abs(dx) < car.size.hl + 0.4 && Math.abs(dz) < car.size.hw + 0.4) {
+      // On foot he can't walk through one. If it was still moving when it reached him, he is run over.
+      if (car.speed > 3.5 && dx * car.dir > 0 && player.downTime < 0 && !downed) {
+        if (health - car.speed * 2.5 <= 0) deathCause = `You were run over by a ${car.name}.`;
+        knockDown(player, car.group.position);
+        hurtPlayer(Math.round(car.speed * 2.5));
+        sfx('crash');
+        car.stun = 3;
+        car.speed = 0;
+      }
+      here.z = car.group.position.z + Math.sign(dz || 1) * (car.size.hw + 0.4);
+    } else if (driving && Math.hypot(dx, dz) < 2.8) {
+      // Driving into one: both stop dead, and his car takes a dent.
+      const apart = Math.hypot(dx, dz) || 1;
+      truck.group.position.x += dx / apart * (2.8 - apart);
+      truck.group.position.z += dz / apart * (2.8 - apart);
+      if (Math.abs(truck.speed) > 4 && gameTime - (truck.dentAt ?? -9) > 0.8) addDent(truck);
+      truck.speed *= -0.25;
+      car.stun = 3;
+      car.speed = 0;
+    }
+  }
+  if (driving) {
+    if (truck.bump > 7 && gameTime - (truck.dentAt ?? -9) > 0.9) addDent(truck); // hit a wall, a lamp post, a parked car...
+    if (testView.has('dents') && !updateRoads.dented) { updateRoads.dented = true; for (let i = 0; i < Number(testView.get('dents')); i++) addDent(truck); }
+    smokeTick -= dt;
+    if ((truck.dents || 0) >= 4 && smokeTick <= 0) { // badly knocked about: smoke from under the bonnet
+      smokeTick = 0.22;
+      const length = (truck.size?.hl ?? 2.5) * 0.7;
+      emitSmoke(gun, puffSpot.set(truck.group.position.x + Math.sin(truck.heading) * length, truck.group.position.y + 1.15, truck.group.position.z + Math.cos(truck.heading) * length), 0.5 + truck.dents * 0.09);
+    }
+  }
+  // Haircuts: put the saved one on once he has loaded, and carry on with a trim in progress.
+  if (!hairReady && player.bones) {
+    hairReady = true;
+    if (testView.has('hair')) {
+      hairKey = testView.get('hair');
+      const head = player.bones.head, tip = player.group.getObjectByName('HeadTop_End'), size = head.getWorldScale(new THREE.Vector3());
+      const at = head.getWorldPosition(new THREE.Vector3()), top = tip ? tip.getWorldPosition(new THREE.Vector3()) : at;
+      const wear = player.group.getObjectByName('Wolf3D_Headwear'), skull = player.group.getObjectByName('Wolf3D_Head');
+      skull?.geometry.computeBoundingBox();
+      console.log(`TEST head: bone scale ${size.x.toFixed(3)} bone y ${at.y.toFixed(3)} top y ${top.y.toFixed(3)} tip local ${tip ? tip.position.toArray().map((n) => n.toFixed(3)) : 'none'} feet y ${player.group.position.y.toFixed(2)} headmesh box ${skull ? JSON.stringify(skull.geometry.boundingBox.min.toArray().map((n) => +n.toFixed(3))) + JSON.stringify(skull.geometry.boundingBox.max.toArray().map((n) => +n.toFixed(3))) : 'none'} wear ${!!wear}`);
+    }
+    if (hairKey !== 'own') applyHair(hairKey, !testView.has('nohat'));
+  }
+  if (trim) {
+    trim.time += dt;
+    here.set(barberShop.chair.x, here.y, barberShop.chair.z);
+    player.group.rotation.y = barberShop.facing;
+    if (Math.floor(trim.time / 0.32) !== Math.floor((trim.time - dt) / 0.32)) sfx('snip');
+    if (trim.time > 4.5) {
+      applyHair(trim.cut.key, true); // and the hat goes back on
+      persist();
+      toast({ Good: `Tony spins the chair round. "${trim.cut.name}. Sharp." Your hat goes back on.`, Okay: `"There. ${trim.cut.name}." It is... fine. Your hat goes back on.`, Bad: `Tony steps back and winces. "${trim.cut.name}. No refunds." You put your hat back on quickly.` }[trim.cut.grade]);
+      trim = null;
+    }
+  }
+}
+function roadPrompts() {
+  if (shopOpen || martOpen || casinoOpen || atmOpen || boxOpen || barberOpen || chatOpen || trim) return;
+  const car = mechanicJob();
+  if (car) { usePrompt.textContent = car.dents ? `Press E: Mick fixes ${car.dents} dent${car.dents > 1 ? 's' : ''} for G$ ${car.dents * DENT_PRICE}` : 'Fix-It Garage: no dents on this one'; usePrompt.style.display = 'block'; }
+  else if (atBarber()) { usePrompt.textContent = 'Press E for a haircut'; usePrompt.style.display = 'block'; }
+  else if (!driving && !boating && traffic.some((one) => one.active && one.speed < 3.5 && near(one.group.position.x, one.group.position.z, 3.4))) { usePrompt.textContent = 'Press F to pull the driver out and take the car'; usePrompt.style.display = 'block'; }
+}
+
+// --- Sharp Cuts: haircuts ----------------------------------------------------------------------------
+// His hat only comes off while his hair is being cut. A haircut replaces the long hair that came
+// with the hat, so afterwards he wears the same sort of hat over the new cut.
+let barberOpen = false, trim = null, hairKey = saved.hair || 'own', hairParts = null, myHat = null, hairReady = false;
+const atBarber = () => !driving && !boating && near(barberShop.chair.x, barberShop.chair.z, 1.4);
+function applyHair(key, hatOn) {
+  const head = player.bones.head, old = player.group.getObjectByName('Wolf3D_Headwear');
+  if (hairParts) head.remove(hairParts);
+  if (myHat) head.remove(myHat);
+  hairParts = myHat = null;
+  hairKey = key;
+  if (old) old.visible = key === 'own' && hatOn;
+  if (key === 'own') return;
+  hairParts = makeHair(key);
+  myHat = makeHat();
+  myHat.visible = hatOn;
+  head.add(hairParts, myHat);
+  for (const part of [hairParts, myHat]) part.traverse((piece) => piece.layers.enable(1)); // so they show in reflections
+}
+function drawBarber() {
+  const rows = HAIRCUTS.map((cut, i) => `${i % 3 === 0 ? `<div style="margin-top:8px;font-weight:bold;color:#ffe27a">${cut.grade} cuts · G$ ${cut.price}</div>` : ''}
+    <div style="display:flex;gap:12px;padding:4px 0;border-top:1px solid rgba(243,230,192,0.2)"><b style="width:22px">${i + 1}</b><span style="flex:1"><b>${cut.name}</b> <small>· ${cut.blurb}</small></span>
+    <b>${hairKey === cut.key ? 'YOURS NOW' : ''}</b></div>`).join('');
+  shopEl.innerHTML = `<div style="font-size:22px;font-weight:bold;margin-bottom:2px">Sharp Cuts</div>
+    <div>"What are we doing today?" &nbsp;·&nbsp; You have <b>G$ ${money.toLocaleString('en-US')}</b></div>${rows}
+    <div style="margin-top:10px;opacity:0.85">Press 1 to 9 for a cut &nbsp;·&nbsp; E to leave<br><small>Your hat comes off for the trim and goes straight back on after.</small></div>`;
+}
+function setBarber(open) {
+  barberOpen = open;
+  shopEl.style.display = open ? 'block' : 'none';
+  if (open) drawBarber();
+}
+function barberKey(code) {
+  const cut = HAIRCUTS[['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9'].indexOf(code)];
+  if (!cut) return;
+  if (money < cut.price) return sfx('error'), toast(`That one is G$ ${cut.price}. You only have G$ ${money} on you.`);
+  money -= cut.price;
+  showMoney();
+  sfx('buy');
+  setBarber(false);
+  gun.equipped = false;
+  knifeOut = false;
+  trim = { time: 0, cut };
+  applyHair(cut.key, false); // hat off while the scissors are out
+  toast(`Your hat comes off. Tony gets to work on ${cut.name.toLowerCase().startsWith('the ') ? cut.name.toLowerCase() : `a ${cut.name.toLowerCase()}`}...`);
+}
 // Where he has to stand to use things.
 const near = (px, pz, reach) => Math.hypot(player.group.position.x - px, player.group.position.z - pz) < reach;
 const atCounter = () => near(54, 13.2, 3.2) && player.group.position.z > 6.3; // in front of Big Al
@@ -1912,6 +2109,10 @@ let wagesAt = -WAGE_WAIT;
 function useKey() {
   if (workout) return;
   if (jailed > 0) return payBail();
+  if (trim) return;
+  if (barberOpen) return setBarber(false);
+  if (atBarber()) return setBarber(true);
+  if (mechanicJob()) return repairCar();
   if (boxOpen) return setBox(false);
   if (atBookie()) return setBox(true);
   if (photosOpen) return showPhotos(false);
@@ -1988,6 +2189,7 @@ const speedo = document.getElementById('speed');
 let driving = false;
 function toggleDriving() {
   const here = player.group.position;
+  if (!driving && !boating) jackTraffic();                   // a car stopped in the road can be taken off its driver
   if (!driving && !boating) truck = nearVehicle() || truck; // the one he is standing beside
   const there = truck.group.position;
   // Boats: F gets in when next to one, and out again at the jetty or the bank.
@@ -2077,7 +2279,8 @@ window.addEventListener('keydown', (e) => {
   if (!e.repeat) {
     const pick = { Digit1: 'pistol', Digit2: 'shotgun', Digit3: 'rifle' }[e.code];
     const martPick = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
-    if (boxOpen) boxKey(e.code);                                            // at the bookie's booth
+    if (barberOpen) barberKey(e.code);                                      // choosing a haircut
+    else if (boxOpen) boxKey(e.code);                                            // at the bookie's booth
     else if (atmOpen) atmKey(['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'].indexOf(e.code));   // using a cash machine
     else if (casinoOpen) casinoKey(e.code);                                 // playing in the casino
     else if (martOpen) { if (martPick >= 0) buyMart(martPick); }                 // buying at Sunny's Mart
@@ -2135,13 +2338,14 @@ if (testView.has('at')) { // ?at=x,z starts the player somewhere else
   const [x, z, y = 0] = testView.get('at').split(',').map(Number); // (a third number is the height, for upstairs)
   player.group.position.set(x, y, z);
 }
+if (testView.has('camh')) Object.assign(cam, { height: Number(testView.get('camh')), pitch: 0.02 }); // ?camh=1.7 puts the camera at head height
 if (testView.has('face')) player.group.rotation.y = Number(testView.get('face')); // ?face=1.57 turns him
 if (testView.has('yaw')) cam.yaw = Number(testView.get('yaw')); // ?yaw=1.5 turns the camera
 if (testView.has('dist')) Object.assign(cam, { distance: Number(testView.get('dist')), pitch: 0.3, height: 0.9 }); // ?dist=2 moves it in close and low
 if (testView.has('front')) {
   player.group.rotation.y = 0;
-  cam.yaw = 0;
-  Object.assign(cam, { distance: Number(testView.get('front')) || 3, height: 1.2, shoulder: 0, pitch: 0.15 });
+  cam.yaw = Number(testView.get('yaw')) || 0;
+  Object.assign(cam, { distance: Number(testView.get('front')) || 3, height: Number(testView.get('camh')) || 1.2, shoulder: 0, pitch: testView.has('camh') ? 0.02 : 0.15 });
 }
 
 // Click the game to capture the mouse; Esc releases it. Holding a mouse button
@@ -2225,6 +2429,7 @@ const npcs = createNpcs(scene, MAP_SIZE / 2, testView.has('npc') ? new THREE.Vec
    policeStation.userData.officer,
    miamiPD.userData.officer, miamiPD.userData.guard, ...miamiPD.userData.prisoners, // Miami's desk officer, the cell guard, and the prisoners
    gatorBank.userData.teller, VAULT_PEOPLE.stranger, VAULT_PEOPLE.lenny, ...VAULT_PEOPLE.holders, // the bank teller, and the six people in the vault job
+   garage.mechanic, barberShop.barber,             // the mechanic and the barber on Brew St
    seaParts.guard.post,                            // the lifeguard on the beach
    fightClub.bookie,                               // the bookie at the Fight Club
    beerShop.userData.cashier,                      // the cashier in the beer shop
@@ -2480,7 +2685,7 @@ function step(dt) {
     updatePlayer(player, input, cam.yaw, dt, MAP_SIZE / 2);
   }
   speedo.style.display = driving || boating ? 'block' : 'none';
-  if (driving || boating) speedo.textContent = `${Math.round(Math.abs((boating || truck).speed) * 2.237)} mph`;
+  if (driving || boating) speedo.textContent = `${Math.round(Math.abs((boating || truck).speed) * 2.237)} mph` + (driving && truck.dents ? ` · ${truck.dents} dent${truck.dents > 1 ? 's' : ''}` : '');
   updateHouse(house, player.group.position, dt);
   updateIguanas(iguanas, player.group.position, dt);
   // Walking over a dead iguana picks it up.
@@ -2608,6 +2813,7 @@ function step(dt) {
   updateCasino(dt);
   updateBeach(dt);
   updateJob(dt);
+  roadPrompts();
   if (testView.has('dog') && !updateJob.dogShown && player.bones) { // ?dog=0,9 stands those two dogs in front of the camera, for checking how they look
     updateJob.dogShown = true;
     player.group.visible = false;
@@ -2651,6 +2857,7 @@ function step(dt) {
   if (driving || boating) gun.mesh.visible = false;
   updatePolice(dt);
   updatePoliceFire(dt);
+  updateRoads(dt);
   // Where he is and which way the camera looks, so that only people who could be seen are worked out and drawn.
   camera.getWorldDirection(lookWay);
   const flat = Math.hypot(lookWay.x, lookWay.z);
