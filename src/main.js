@@ -24,7 +24,10 @@ import { createLake, updateLake, boatNear, landingSpot, SEAT } from './lake.js';
 import { createAlligators, updateAlligators } from './alligator.js';
 import { createTruck, updateTruck, setEngine } from './truck.js';
 import { createCars } from './cars.js';
-import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt } from './world.js';
+import { createSeaLife, updateSeaLife } from './sealife.js';
+import { createBank, setVaultDoor, VAULT_PEOPLE, portrait } from './bank.js';
+import { createDogs, updateDogs, findDogHit, dogNear, hurtDog, patDog } from './dogs.js';
+import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt, seaBedAt } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke, emitBloodMist } from './gun.js';
 import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, playStrike, findGrab, neckSpot, strangle, CHOKE_TIME, floorNpc, reviveNpc, speeches, speak, findListener, replyTo, debug as npcDebug } from './npc.js';
 
@@ -102,6 +105,9 @@ const ground = new THREE.Mesh(
   addDirt(new THREE.MeshStandardMaterial({ map: makeGrassTexture(), roughness: 1 }))
 );
 ground.rotation.x = -Math.PI / 2;
+// The ground stops at the water's edge (x = 962): beyond that is the sea, with its own sandy bottom far below.
+ground.scale.x = (GROUND_SIZE / 2 + 962) / GROUND_SIZE;
+ground.position.x = (962 - GROUND_SIZE / 2) / 2;
 ground.receiveShadow = true;
 scene.add(ground);
 
@@ -132,6 +138,10 @@ const beerShop = createBeerShop(scene, 624, 41);
 
 // The sea and its beach, past the far end of the city.
 const seaParts = createSea(scene, 962, scene.fog, SUN_OFFSET);
+// Fish, sharks, jellyfish and turtles in it, and rocks, coral and seaweed on the bottom.
+const seaLife = createSeaLife(scene, 962);
+// The sea is a mirror: the sky and the lights have to be marked as things it shows (the player is marked once he has loaded).
+for (const part of [sky, skyLight, sun]) part.layers.enable(1);
 
 // The two gangs' corners: the Vipers on Palm Ave and the Sharks in Miami.
 createTurfs(scene);
@@ -144,6 +154,12 @@ const policeStation = createPoliceStation(scene, 112, -23, -9);
 
 // Miami's own police station, two storeys, at the bottom end of Brew St. The cells are upstairs.
 const miamiPD = createMiamiPD(scene, 624, -68.2, -55);
+
+// Gator Bank, in the gap between Hotel Tropic and Coral Sands on the far side of the main road.
+const gatorBank = createBank(scene, 777.5, 12);
+
+// Dogs: friendly ones about the streets, and guard dogs by the things they guard.
+const dogs = createDogs(scene);
 
 // --- Money and shopping ---------------------------------------------------------
 // The money is called Gator Bucks (G$). He starts with some, earns wages from the
@@ -159,7 +175,7 @@ let bank = saved.bank ?? 0;       // what he has paid in at a cash machine: that
 const owned = new Set(saved.owned || []);
 if (new URLSearchParams(location.search).has('gun')) owned.add('pistol'); // test views start armed
 owned.add('camo'); // his own special rifle: nobody sells it and nobody else has one. Press 7 to carry it.
-const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, bank, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests, compDay })); } catch { /* no storage */ } };
+const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, bank, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests, compDay, job })); } catch { /* no storage */ } };
 
 const overlay = (css) => { const el = document.createElement('div'); el.style.cssText = `position:fixed;pointer-events:none;font-family:system-ui,sans-serif;${css}`; document.body.appendChild(el); return el; };
 const moneyEl = overlay('right:18px;top:14px;font-weight:bold;font-size:24px;color:#d8f0c0;background:rgba(30,45,25,0.7);padding:6px 14px;border-radius:8px');
@@ -619,16 +635,67 @@ const WANTED_TIME = 45, FINE = 100;
 let arrests = saved.arrests ?? 0;
 const jailMinutes = () => Math.min(5, arrests);
 let wanted = 0;  // seconds until the police give up, or 0 if he is not wanted
+let stars = 0;   // how badly: one to five
 let jailed = 0;  // seconds left in the cell
 let arresting = false;
 const wantedEl = overlay('display:none;left:18px;top:54px;font-weight:bold;font-size:18px;color:#fff3e0;background:rgba(160,25,15,0.85);padding:5px 14px;border-radius:8px');
 // He is taken to whichever station is nearer: Palm Ave's, or Miami's (where the cells are upstairs).
 let lockUp = policeStation.userData;
 const nearestStation = () => (player.group.position.x > 330 ? miamiPD.userData : policeStation.userData);
-function commitCrime() {
+// level: how serious it is. An ordinary crime is one star, killing somebody two, killing an officer or cracking the vault three.
+// Every further crime while he is already wanted adds a star, up to five.
+let lastCrimeAt = -99;
+function commitCrime(level = 1) {
   if (jailed > 0 || arresting) return;
   if (wanted <= 0) toast('That is a crime! The police are coming for you.');
-  wanted = WANTED_TIME;
+  const more = wanted > 0 && gameTime - lastCrimeAt > 2 ? 1 : 0;
+  lastCrimeAt = gameTime;
+  stars = Math.min(5, Math.max(stars + more, level));
+  wanted = WANTED_TIME + stars * 15; // the more stars, the longer they keep looking
+}
+// When the police have him in sight they call through the megaphone for him to stop. If he
+// stands still with empty hands they walk up and arrest him. If he runs, drives off or has a
+// weapon out, that is resisting arrest: they warn him once more, and then they shoot.
+let resist = 0, policeWarned = false, resisting = false, copShot = 0, lastStood = null;
+function updatePoliceFire(dt) {
+  const here = player.group.position;
+  const moved = lastStood ? Math.hypot(here.x - lastStood.x, here.z - lastStood.z) / Math.max(dt, 1e-4) : 0;
+  lastStood = { x: here.x, z: here.z };
+  if (downed) { wanted = 0; stars = 0; }
+  if (wanted <= 0 || jailed > 0 || arresting || downed) { resist = 0; policeWarned = resisting = false; return; }
+  let cop = null, range = 42;
+  for (const one of npcs.officers || []) {
+    const distance = Math.hypot(one.group.position.x - here.x, one.group.position.z - here.z);
+    if (one.state !== 'dead' && distance < range && Math.abs(one.group.position.y - here.y) < 3) { range = distance; cop = one; }
+  }
+  if (!cop) { resist = Math.max(0, resist - dt); return; }
+  if (!policeWarned) {
+    policeWarned = true;
+    sfx('megaphone');
+    speak(cop, 'POLICE! STOP RIGHT THERE! HANDS WHERE I CAN SEE THEM!', 5);
+    toast('Police megaphone: "STOP! Stand still with your hands empty and you will not be hurt."');
+  }
+  const defiant = moved > 0.8 || gun.equipped || knifeOut || driving || !!boating;
+  resist = defiant ? resist + dt : Math.max(0, resist - dt * 2);
+  const patience = stars >= 3 ? 1.5 : 4; // at three stars and up they do not wait long
+  if (resist <= 0) resisting = false;
+  if (resist < patience) return;
+  if (!resisting) {
+    resisting = true;
+    stars = Math.max(stars, 2);
+    copShot = 1.4;
+    sfx('megaphone');
+    speak(cop, 'YOU ARE RESISTING ARREST! STOP OR WE SHOOT!', 5);
+    toast('Police megaphone: "YOU ARE RESISTING ARREST! STOP OR WE WILL SHOOT!"');
+  }
+  copShot -= dt;
+  if (copShot > 0) return;
+  copShot = Math.max(0.35, 1.1 - stars * 0.15); // more stars, faster fire
+  sfx('shot');
+  puffSpot.set(cop.group.position.x, cop.group.position.y + 1.4, cop.group.position.z);
+  emitSmoke(gun, puffSpot, 0.5);
+  const aimed = THREE.MathUtils.clamp(0.8 - range / 55, 0.12, 0.7) * (driving || boating ? 0.45 : 1) * (moved > 5 ? 0.7 : 1);
+  if (Math.random() < aimed) { if (health - 9 <= 0) deathCause = 'The police shot you for resisting arrest.'; hurtPlayer(7 + stars * 2); }
 }
 function arrest() {
   if (arresting || jailed > 0) return;
@@ -646,6 +713,7 @@ function arrest() {
     money -= fine;
     showMoney();
     wanted = 0;
+    stars = 0;
     arrests++;
     sfx('cell');
     jailed = jailMinutes() * 60;
@@ -679,7 +747,7 @@ function updatePolice(dt) {
     // The search only winds down while no officer is close.
     const close = (npcs.officers || []).some((cop) => cop.state !== 'dead' && near(cop.group.position.x, cop.group.position.z, 25));
     if (!close) wanted -= dt;
-    if (wanted <= 0) { wanted = 0; toast('The police have lost you.'); }
+    if (wanted <= 0) { wanted = 0; stars = 0; toast('The police have lost you.'); }
   }
   if (jailed > 0) {
     jailed -= dt;
@@ -691,12 +759,13 @@ function updatePolice(dt) {
     }
   }
   wantedEl.style.display = wanted > 0 || jailed > 0 ? 'block' : 'none';
-  wantedEl.textContent = jailed > 0 ? `IN THE CELLS · released in ${Math.floor(Math.ceil(jailed) / 60)}:${String(Math.ceil(jailed) % 60).padStart(2, '0')}  ·  press E to pay G$ ${BAIL} bail` : 'WANTED';
+  wantedEl.innerHTML = jailed > 0 ? `IN THE CELLS · released in ${Math.floor(Math.ceil(jailed) / 60)}:${String(Math.ceil(jailed) % 60).padStart(2, '0')}  ·  press E to pay G$ ${BAIL} bail` : `<span style="color:#ffd75a;letter-spacing:2px">${'★'.repeat(stars)}</span><span style="opacity:0.35;letter-spacing:2px">${'★'.repeat(5 - stars)}</span> &nbsp;${resisting ? 'RESISTING ARREST' : 'WANTED'}`;
 }
 // --- Health -------------------------------------------------------------------------------
 // Getting shot costs health. It comes back slowly if he stays out of trouble. At zero
 // he passes out and wakes up back on Palm Ave with a doctor's bill.
 let health = 100, lastHurtAt = -99, downed = false;
+let deathCause = ''; // what to say killed him, when it wasn't a bullet
 const healthEl = overlay('left:18px;top:94px');
 function showHealth() {
   healthEl.innerHTML = `<div style="width:170px;height:14px;background:rgba(0,0,0,0.55);border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,0.35)">
@@ -725,7 +794,8 @@ function hurtPlayer(amount) {
     player.group.position.copy(city.home.street);
     fadeEl.style.opacity = 0;
     persist();
-    toast(bill ? `You died and lost the G$ ${bill.toLocaleString('en-US')} you were carrying. ${bank ? `Your G$ ${bank.toLocaleString('en-US')} in the bank is safe.` : 'Next time, put your money in a cash machine first.'}` : 'You died, but you had no cash on you to lose.');
+    toast((deathCause ? deathCause + ' ' : '') + (bill ? `You died and lost the G$ ${bill.toLocaleString('en-US')} you were carrying. ${bank ? `Your G$ ${bank.toLocaleString('en-US')} in the bank is safe.` : 'Next time, put your money in a cash machine first.'}` : 'You died, but you had no cash on you to lose.'));
+    deathCause = '';
   }, 1300);
 }
 function healOverTime(dt) {
@@ -1400,6 +1470,7 @@ function landBlow(target, damage, shove) {
   if (!target.gang && !inRing(target)) commitCrime();
 }
 function updateMelee(dt, input) {
+  if (seaTrouble) Object.assign(input, { x: 0, z: 0, sprint: false, jump: false, crouch: false }); // in trouble in the sea: he can't swim on
   if (testView.has('kick')) input.kick = 1; // ?kick holds the leg out, for checking the pose
   if (kickTime > 0) {
     kickTime -= dt;
@@ -1408,8 +1479,9 @@ function updateMelee(dt, input) {
     Object.assign(input, { x: 0, z: 0, sprint: false, jump: false, crouch: false, lockFacing: true });
     if (!kickLanded && t >= 0.42) {
       kickLanded = true;
-      const target = meleeTarget(2.0);
+      const target = meleeTarget(2.0), mutt = target ? null : dogNear(dogs, player.group.position, 1.7);
       if (target) landBlow(target, 35, 1.0);
+      else if (mutt) { hurtDog(mutt, 30); playStrike('punch'); if (!mutt.breed.hostile) commitCrime(); } // a boot for a dog that is on him
     }
   }
   if (throwTime > 0) {
@@ -1463,11 +1535,13 @@ function openChat(who) {
   chatBox.focus();
 }
 function closeChat() {
+  if (codeEntry) { codeEntry = false; chatBox.maxLength = 80; chatBox.placeholder = 'Type what you want to say, then press Enter  (Esc to cancel)'; }
   chatOpen = false;
   chatBox.style.display = 'none';
   chatBox.blur();
 }
 function sayIt() {
+  if (codeEntry) { const typed = chatBox.value.trim().toUpperCase(); closeChat(); return tryCode(typed); } // it was the vault's keypad he was typing into
   const text = chatBox.value.trim().slice(0, 80), who = chatWith;
   closeChat();
   if (!text || !who) return;
@@ -1502,6 +1576,14 @@ function updateTalk(dt) {
         `most turn-backs in a row ${worstStuck}, frames spent pushing at something ${wallTime}, nearest ${Math.min(...here.map((one) => Math.hypot(one.group.position.x - player.group.position.x, one.group.position.z - player.group.position.z))).toFixed(1)} m`);
     }, 0);
   }
+  if (testView.has('sim') && !updateTalk.ran && npcs.cashiers?.length && player.bones) { // ?sim=600 runs that many frames at once, then reports where things stand
+    updateTalk.ran = true;
+    setTimeout(() => {
+      for (let frame = 0; frame < Number(testView.get('sim')); frame++) step(1 / 30);
+      const p = player.group.position;
+      console.log(`TEST sim: cam y ${camera.position.y.toFixed(1)} at ${p.x.toFixed(0)},${p.y.toFixed(1)},${p.z.toFixed(0)} health ${Math.round(health)} stars ${stars} resisting ${resisting} cash ${money} downed ${downed} trouble ${!!seaTrouble} flag ${flagShown} | ${toastEl.textContent}`);
+    }, 0);
+  }
   if (chatOpen) { // while he is typing, nothing else happens, and they wait to hear it
     punchQueued = false;
     shotQueued = false;
@@ -1525,11 +1607,267 @@ function updateTalk(dt) {
     bubble.textContent = (speech.who.self ? 'You: ' : speech.who.name ? `${speech.who.name}: ` : '') + speech.text;
   });
 }
+// --- The beach: flags and the lifeguard -----------------------------------------------------------
+// The flag on the lifeguard station changes every day. Green is safe. Under the others,
+// swimming in the sea can go wrong: cramp (yellow), a huge wave (red), or something with teeth
+// (purple). The lifeguard always comes for you. He is not very good: he gets to you in time about
+// one time in twenty.
+const FLAGS = {
+  green: { colour: 0x2fae4a, name: 'Green flag', note: 'calm sea, go and swim', risk: 0 },
+  yellow: { colour: 0xf2c230, name: 'Yellow flag', note: 'swim with caution', risk: 0.012, trouble: 'CRAMP! You are going under!', cause: 'You drowned with cramp before the lifeguard could reach you.' },
+  red: { colour: 0xd9281e, name: 'Red flag', note: 'high waves, stay out of the water', risk: 0.1, trouble: 'A HUGE WAVE DRAGS YOU UNDER!', cause: 'The waves took you before the lifeguard could reach you.' },
+  purple: { colour: 0x7a3fc0, name: 'Purple flag', note: 'dangerous sea life, stay out of the water', risk: 0.08, trouble: 'SOMETHING HAS YOU BY THE LEG!', cause: 'Something in the water got you before the lifeguard could.' },
+};
+const FLAG_DAYS = ['green', 'yellow', 'green', 'red', 'green', 'yellow', 'green', 'purple', 'green', 'yellow', 'red', 'green', 'green'];
+const RESCUE_CHANCE = 0.05;
+const troubleEl = overlay('display:none;left:50%;top:22%;transform:translateX(-50%);font-weight:bold;font-size:28px;color:#fff3e0;background:rgba(150,25,15,0.85);padding:12px 24px;border-radius:10px;text-align:center');
+let seaTrouble = null, swimTime = 0, flagShown = '', flagToldDay = 0, lifeguard = null;
+function updateBeach(dt) {
+  // The flag changes every three hours of the game's day, and is green more often than anything else.
+  const key = FLAGS[testView.get('flag')] ? testView.get('flag') : FLAG_DAYS[(day * 8 + Math.floor(hourNow / 3)) % FLAG_DAYS.length], flag = FLAGS[key];
+  if (flagShown !== key) { flagShown = key; seaParts.guard.flag.color.setHex(flag.colour); }
+  lifeguard ??= (npcs.cashiers || []).find((one) => one.spot?.lifeguard) || null;
+  if (lifeguard) lifeguard.flagLine = `${flag.name} today: ${flag.note}.${flag.risk ? ' If you go in anyway, I will do my best. No promises.' : ''}`;
+  const here = player.group.position;
+  if (here.x > seaParts.shoreX - 38 && flagToldDay !== key && !driving) { // arriving at the beach, or the flag being changed while he is there
+    flagToldDay = key;
+    toast(`${flag.name} on the beach now: ${flag.note}.`);
+  }
+  const inSea = !driving && !boating && !downed && jailed <= 0 && here.x > seaParts.shoreX && waterDepthAt(here) > 0.9;
+  if (!seaTrouble) {
+    swimTime = inSea ? swimTime + dt : 0;
+    if (inSea && flag.risk && (testView.has('drown') || (swimTime > 3 && Math.random() < flag.risk * dt))) { // it goes wrong
+      seaTrouble = { time: 0, flag };
+      sfx(key === 'purple' ? 'growl' : 'splash');
+      troubleEl.innerHTML = `${flag.trouble}<div style="font-size:17px;font-weight:normal;margin-top:4px">The lifeguard is coming…</div>`;
+      troubleEl.style.display = 'block';
+      if (lifeguard) speak(lifeguard, 'HOLD ON! I AM COMING!', 4);
+    }
+    if (lifeguard?.runTo && Math.hypot(lifeguard.group.position.x - lifeguard.home.x, lifeguard.group.position.z - lifeguard.home.z) < 0.9) { // back on his spot
+      lifeguard.runTo = null;
+      lifeguard.group.rotation.y = lifeguard.facing;
+    }
+    return;
+  }
+  // In trouble: he thrashes about while the lifeguard runs down the beach and swims out.
+  seaTrouble.time += dt;
+  hurt = Math.max(hurt, 0.35 + 0.25 * Math.sin(seaTrouble.time * 9));
+  cam.yaw += Math.sin(seaTrouble.time * 11) * 0.5 * dt;
+  if (Math.floor(seaTrouble.time / 0.9) !== Math.floor((seaTrouble.time - dt) / 0.9)) sfx('swim');
+  if (lifeguard && lifeguard.dead <= 0) lifeguard.runTo = here;
+  const reached = lifeguard && lifeguard.dead <= 0 && Math.hypot(lifeguard.group.position.x - here.x, lifeguard.group.position.z - here.z) < 1.6;
+  if (!reached && seaTrouble.time < 16) return;
+  // He is there (or it has simply been too long). One time in twenty he is in time.
+  const saved = reached && (testView.get('rescue') === 'yes' || (testView.get('rescue') !== 'no' && Math.random() < RESCUE_CHANCE));
+  troubleEl.style.display = 'none';
+  if (lifeguard) lifeguard.runTo = lifeguard.home;
+  if (saved) {
+    fadeEl.style.opacity = 1;
+    const spot = seaParts.guard.ashore;
+    setTimeout(() => {
+      here.copy(spot);
+      health = Math.max(25, Math.min(health, 40));
+      showHealth();
+      knockDown(player, lifeguard.group.position);
+      fadeEl.style.opacity = 0;
+      toast('The lifeguard hauls you out and pumps the water out of you. You are ALIVE. That almost never happens.');
+      if (lifeguard) speak(lifeguard, 'Got one! I actually got one!', 5);
+    }, 900);
+  } else {
+    deathCause = seaTrouble.flag.cause;
+    if (lifeguard) speak(lifeguard, 'Ah. Not again.', 5);
+    hurtPlayer(9999);
+  }
+  seaTrouble = null;
+  swimTime = 0;
+}
+// --- Under the sea -------------------------------------------------------------------------------
+// Out in deep water, hold C to dive and Space to come up. He can hold his breath for half a
+// minute; when it runs out he swims up by himself. Below the surface everything turns blue-green
+// and you can only see so far, the way it is under real water.
+const BREATH = 30;
+let breath = BREATH, wasUnder = false, mirrored = false;
+const breathEl = overlay('display:none;left:18px;top:128px;width:172px;height:10px;background:rgba(0,0,0,0.45);border-radius:5px;overflow:hidden');
+const breathBar = document.createElement('div');
+breathBar.style.cssText = 'height:100%;background:#5fc8f0;border-radius:5px';
+breathEl.appendChild(breathBar);
+const underEl = overlay('inset:0;background:rgba(20,110,130,0.28);opacity:0;transition:opacity 0.25s');
+const fogKeep = new THREE.Color();
+// Down there, nothing further off than this can be seen, so nothing further off is drawn.
+// A plain shell of water-colour round the camera stands in for the distance.
+const murk = new THREE.Mesh(new THREE.SphereGeometry(70, 16, 12), new THREE.MeshBasicMaterial({ side: THREE.BackSide, fog: false, depthWrite: false }));
+murk.renderOrder = -5;
+murk.visible = false;
+scene.add(murk);
+function underwaterLook(dt) {
+  if (!mirrored && player.bones) { mirrored = true; player.group.traverse((part) => part.layers.enable(1)); } // so the water shows his reflection
+  // His breath: it runs down while his head is under, and comes back quickly at the surface.
+  const headUnder = !driving && !boating && (player.dive || 0) > 0.55;
+  breath = THREE.MathUtils.clamp(breath + (headUnder ? -dt : dt * 5), 0, BREATH);
+  if (breath <= 0 && headUnder && !underwaterLook.told) { underwaterLook.told = true; toast('Out of breath! He heads for the surface.'); }
+  if (!headUnder) underwaterLook.told = false;
+  breathEl.style.display = breath < BREATH - 0.2 ? 'block' : 'none';
+  breathBar.style.width = `${(breath / BREATH) * 100}%`;
+  // The camera below the surface of the sea: thick blue-green water all round.
+  const under = camera.position.y < 0.17 && camera.position.x > seaParts.shoreX;
+  if (under) {
+    if (!wasUnder) { fogKeep.copy(scene.fog.color); sfx('splash'); camera.far = 76; camera.updateProjectionMatrix(); }
+    scene.fog.near = 0.5;
+    scene.fog.far = 46;
+    scene.fog.color.setRGB(0.07, 0.36, 0.42).multiplyScalar(0.25 + 0.75 * daylight.value);
+    murk.material.color.copy(scene.fog.color);
+    murk.position.copy(camera.position);
+  } else if (wasUnder) {
+    scene.fog.near = 260;
+    scene.fog.far = 1500;
+    scene.fog.color.copy(fogKeep);
+    camera.far = 2000;
+    camera.updateProjectionMatrix();
+  }
+  sky.visible = !under;
+  murk.visible = under;
+  underEl.style.opacity = under ? 1 : 0;
+  wasUnder = under;
+}
+// --- The vault job --------------------------------------------------------------------------------
+// A stranger outside Aqua Tower sends him to Lenny, beside the beer shop. Lenny hands over four
+// photographs. Each is of somebody there is only one of, and each of them knows one character of
+// the four-character code for the vault in Gator Bank. Type the code into the keypad by the vault
+// door, and the money inside is his. It can be done again a few days later, with a new code.
+const CODE_LETTERS = 'ABCDEFGHJKLMNPRSTUVWXYZ23456789', VAULT_PRIZE = 25000;
+// stage: 0 not started, 1 sent to Lenny, 2 has the photographs, 3 the vault is open, 4 emptied (until the day in `until`).
+const job = Object.assign({ stage: 0, code: '', known: [false, false, false, false], until: 0 }, saved.job);
+const holders = VAULT_PEOPLE.holders, pictures = holders.map(portrait);
+let photosOpen = false, codeEntry = false, vaultSwing = job.stage >= 3 ? 1 : 0;
+const jobEl = overlay('display:none;left:18px;top:150px;font-size:13px;color:#f3e9d2;background:rgba(28,34,22,0.82);padding:6px 8px;border-radius:8px');
+function drawJob() {
+  jobEl.style.display = job.stage === 2 || job.stage === 3 ? 'block' : 'none';
+  jobEl.innerHTML = `<div style="font-weight:bold;margin-bottom:4px">${job.stage === 3 ? 'THE VAULT IS OPEN' : 'VAULT CODE'}</div><div style="display:flex;gap:5px">` +
+    holders.map((person, i) => `<div style="text-align:center"><img src="${pictures[i]}" style="width:42px;display:block;border-radius:3px;opacity:${job.known[i] ? 1 : 0.55}">
+      <b style="font-size:19px;color:${job.known[i] ? '#ffe27a' : '#f3e9d2'}">${job.known[i] ? job.code[i] : '?'}</b></div>`).join('') + '</div>';
+}
+drawJob();
+function showPhotos(open = true) {
+  photosOpen = open;
+  shopEl.style.display = open ? 'block' : 'none';
+  if (!open) return;
+  shopEl.innerHTML = `<div style="font-size:22px;font-weight:bold;margin-bottom:4px">Lenny's four photographs</div>
+    <div style="margin-bottom:10px">Each of them knows one piece of the vault code. Find them and press E. There is only one of each.</div>
+    <div style="display:flex;gap:12px">${holders.map((person, i) => `<div style="width:124px;text-align:center"><img src="${pictures[i]}" style="width:120px;border:2px solid #f3e6c0;border-radius:4px">
+      <div style="margin-top:4px"><small>${['1st', '2nd', '3rd', '4th'][i]} piece · ${person.hint}</small></div><b style="color:#ffe27a">${job.known[i] ? `Told you: ${job.code[i]}` : ''}</b></div>`).join('')}</div>
+    <div style="margin-top:12px;opacity:0.8">E to put them away. They stay in the corner of the screen.</div>`;
+}
+// Somebody in the job (or the keypad, or the cash) close enough to use.
+function jobNear() {
+  const here = player.group.position;
+  if (driving || boating) return null;
+  const by = (spot, reach) => Math.abs(here.y - (spot.y || 0)) < 1.6 && near(spot.x, spot.z, reach);
+  if (by(VAULT_PEOPLE.stranger, 2.3)) return { who: VAULT_PEOPLE.stranger };
+  if (by(VAULT_PEOPLE.lenny, 2.3)) return { who: VAULT_PEOPLE.lenny };
+  const index = holders.findIndex((person) => by(person, 2.4));
+  if (index >= 0) return { who: holders[index], index };
+  if (by(gatorBank.userData.keypad, 1.3)) return { keypad: true };
+  if (job.stage === 3 && by(gatorBank.userData.loot, 2.2)) return { loot: true };
+  return null;
+}
+// One of them says something: a speech bubble over their head, and the words on screen as well.
+function sayAs(spot, text) {
+  const body = (npcs.cashiers || []).find((one) => one.spot === spot);
+  if (body) speak(body, text, 7);
+  toast(`${spot.name}: "${text}"`);
+}
+function jobUse(target) {
+  if (target.keypad) {
+    if (job.stage === 3) return toast('The vault is already open. Get in there.');
+    if (job.stage === 4) return toast('The keypad is dead. The bank changed everything after the last robbery.');
+    codeEntry = true;
+    chatOpen = true;
+    chatWith = null;
+    keys.clear();
+    chatBox.value = '';
+    chatBox.maxLength = 4;
+    chatBox.placeholder = 'Vault code: 4 letters or numbers, then Enter';
+    chatBox.style.display = 'block';
+    chatBox.focus();
+    return;
+  }
+  if (target.loot) {
+    money += VAULT_PRIZE;
+    job.stage = 4;
+    job.until = day + 3;
+    sfx('levelup');
+    commitCrime();
+    showMoney(); drawJob(); persist();
+    return toast(`You stuff your pockets: G$ ${VAULT_PRIZE.toLocaleString('en-US')} in cash! Now run, and get it into a cash machine before something happens to you.`);
+  }
+  const { who, index } = target;
+  if (who === VAULT_PEOPLE.stranger) {
+    if (job.stage === 0) { job.stage = 1; persist(); return sayAs(who, 'Psst. You. Want to be rich? Go and see Lenny. He stands beside the Cold Ones beer shop, top of Brew St. Tell him the stranger sent you.'); }
+    return sayAs(who, job.stage === 4 ? 'Nice work. Lie low for a few days, then come and find me.' : job.stage === 1 ? 'I told you. Lenny. Beside the beer shop at the top of Brew St.' : 'You have the photographs. What are you standing here for?');
+  }
+  if (who === VAULT_PEOPLE.lenny) {
+    if (job.stage === 0) return sayAs(who, 'Do I know you? No. Get lost.');
+    if (job.stage === 3) return sayAs(who, 'It is OPEN? Then what are you doing here? Go!');
+    if (job.stage === 4) return sayAs(who, 'Beautiful job. Give it a few days and we go again.');
+    if (job.stage === 1) { // he hands over the photographs, and a new code is set
+      job.stage = 2;
+      job.code = Array.from({ length: 4 }, () => CODE_LETTERS[Math.floor(Math.random() * CODE_LETTERS.length)]).join('');
+      job.known = [false, false, false, false];
+      sfx('pickup');
+      sayAs(who, 'The stranger sent you? Good. Four people each know one piece of the code for the vault in Gator Bank. Here are their pictures.');
+    } else sayAs(who, 'Lost them already? Here. Look again.');
+    drawJob(); persist();
+    return showPhotos();
+  }
+  // One of the four in the photographs.
+  if (job.stage !== 2) return sayAs(who, job.stage >= 3 ? 'Vault? What vault? I never said a word.' : ['The cards say you have money trouble.', 'What are you looking at?', 'Do not interrupt a man at the tables.', 'Shh. You will scare the fish.'][index]);
+  const piece = job.code[index];
+  job.known[index] = true;
+  sfx('pickup');
+  drawJob(); persist();
+  sayAs(who, `${['The first', 'The second', 'The third', 'The fourth'][index]} one is ${/\d/.test(piece) ? 'the number' : 'the letter'} ${piece}. You did not hear it from me.`);
+  if (job.known.every(Boolean)) setTimeout(() => toast(`You have the whole code: ${job.code}. Gator Bank is on the main road, between Hotel Tropic and Coral Sands. The keypad is by the vault door.`), 4200);
+}
+function tryCode(typed) {
+  if (!typed) return;
+  if (job.stage === 2 && typed === job.code) {
+    job.stage = 3;
+    sfx('levelup');
+    sfx('cell');
+    commitCrime(3);
+    drawJob(); persist();
+    return toast('ACCESS GRANTED. The great steel door swings open... and every alarm in the building goes off!');
+  }
+  sfx('error');
+  toast(`ACCESS DENIED: ${typed}.${job.stage < 2 ? ' You have no idea what the code is. Somebody must know.' : ''}`);
+}
+function updateJob(dt) {
+  if (job.stage === 4 && day >= job.until) { Object.assign(job, { stage: 0, code: '', known: [false, false, false, false] }); drawJob(); persist(); } // the bank has restocked
+  const open = job.stage >= 3 ? 1 : 0;
+  if (Math.abs(open - vaultSwing) > 0.001 || !updateJob.set) { // the door swings slowly: it weighs tons
+    updateJob.set = true;
+    vaultSwing += (open - vaultSwing) * Math.min(1, 1.6 * dt);
+    setVaultDoor(gatorBank, vaultSwing);
+  }
+  if (photosOpen && !near(VAULT_PEOPLE.lenny.x, VAULT_PEOPLE.lenny.z, 6)) showPhotos(false);
+  if (testView.has('job') && !updateJob.tested && player.bones) { // ?job=2 jumps to a stage (with the code ABCD), for checking it
+    updateJob.tested = true;
+    Object.assign(job, { stage: Number(testView.get('job')), code: 'AB12', known: [true, true, false, false], until: day + 3 });
+    drawJob();
+    if (testView.has('photos')) showPhotos();
+    if (testView.has('code')) tryCode(testView.get('code'));
+  }
+  const target = photosOpen || chatOpen ? null : jobNear();
+  if (target) {
+    usePrompt.textContent = target.keypad ? 'Press E to use the vault keypad' : target.loot ? 'Press E to take the money' : `Press E to talk to ${target.who.name}`;
+    usePrompt.style.display = 'block';
+  }
+}
 // Where he has to stand to use things.
 const near = (px, pz, reach) => Math.hypot(player.group.position.x - px, player.group.position.z - pz) < reach;
 const atCounter = () => near(54, 13.2, 3.2) && player.group.position.z > 6.3; // in front of Big Al
 // Cash machines: the one in Sunny's Mart and three on the streets of Miami.
-const ATMS = [{ x: 27.1, z: -21.25, reach: 1.5 }, ...city.atms.map((spot) => ({ ...spot, reach: 1.2 }))];
+const ATMS = [{ x: 27.1, z: -21.25, reach: 1.5 }, ...city.atms.map((spot) => ({ ...spot, reach: 1.2 })), ...gatorBank.userData.atms.map((spot) => ({ ...spot, reach: 1.0 }))];
 const atCashMachine = () => player.group.position.y < 3 && ATMS.some((atm) => near(atm.x, atm.z, atm.reach));
 let atmOpen = false, atmNote = '';
 function drawAtm() {
@@ -1576,6 +1914,11 @@ function useKey() {
   if (jailed > 0) return payBail();
   if (boxOpen) return setBox(false);
   if (atBookie()) return setBox(true);
+  if (photosOpen) return showPhotos(false);
+  const jobSpot = jobNear();
+  if (jobSpot) return jobUse(jobSpot);
+  const pal = !driving && !boating ? dogNear(dogs, player.group.position, 1.9) : null;
+  if (pal && !pal.breed.hostile && pal.state !== 'flee') { patDog(pal); return toast(`${pal.name} the ${pal.label} loves that. Good dog!`); }
   if (casinoOpen) return setCasino(null);
   const game = casinoSpot();
   if (game === 'cage') return visitCage();
@@ -1770,7 +2113,7 @@ window.addEventListener('keydown', (e) => {
     facingLocked = !facingLocked;
     toast(facingLocked ? 'Facing locked: he keeps facing this way while you move and punch. Press V to unlock.' : 'Facing unlocked: he turns the way he moves again.');
   }
-  if (e.code === 'KeyE' && !e.repeat) useKey(); // talk to Big Al, collect wages, or open the fridge
+  if (e.code === 'KeyE' && !e.repeat) { useKey(); if (chatOpen) e.preventDefault(); } // talk to Big Al, collect wages, or open the fridge
   if (e.code === 'KeyF' && !e.repeat) toggleDriving(); // get in or out of the truck
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -1847,7 +2190,7 @@ function updateCamera() {
   const flat = Math.cos(cam.pitch) * distance;
   camera.position.set(
     lookAt.x + Math.sin(cam.yaw) * flat,
-    Math.max(0.3, lookAt.y + Math.sin(cam.pitch) * distance), // never below ground
+    Math.max((player.dive || 0) > 0.4 ? 0.6 - seaBedAt(p) : 0.3, lookAt.y + Math.sin(cam.pitch) * distance), // never below ground (or, when he dives, below the sea bed)
     lookAt.z + Math.cos(cam.yaw) * flat
   );
   // Indoors, stay under the ceiling.
@@ -1881,6 +2224,8 @@ const npcs = createNpcs(scene, MAP_SIZE / 2, testView.has('npc') ? new THREE.Vec
    gunShop.userData.cashier,
    policeStation.userData.officer,
    miamiPD.userData.officer, miamiPD.userData.guard, ...miamiPD.userData.prisoners, // Miami's desk officer, the cell guard, and the prisoners
+   gatorBank.userData.teller, VAULT_PEOPLE.stranger, VAULT_PEOPLE.lenny, ...VAULT_PEOPLE.holders, // the bank teller, and the six people in the vault job
+   seaParts.guard.post,                            // the lifeguard on the beach
    fightClub.bookie,                               // the bookie at the Fight Club
    beerShop.userData.cashier,                      // the cashier in the beer shop
    city.casino.dealer,                             // the croupier at the roulette table
@@ -1929,6 +2274,7 @@ function step(dt) {
     jump: keys.has('Space') || testView.has('jump'),
     crouch: keys.has('KeyC') || testView.has('crouch'),
     smoke: smokeDrag,
+    surface: breath <= 0, // out of air: he has to come up
     lift: drinking > 0 ? drinkLift : undefined,
     tilt: drinkTilt,
     lockFacing: facingLocked,
@@ -2014,11 +2360,7 @@ function step(dt) {
     reach = -camera.position.y / aimDir.y;
     hitsGround = true;
   }
-  const wall = rayToObstacle(camera.position, aimDir, reach); // bullets stop at walls
-  if (wall < reach) {
-    reach = wall;
-    hitsGround = false;
-  }
+  // Bullets go straight through walls, windows and anything else that is built: only the ground stops them.
   const struck = findNpcHit(targets(), camera.position, aimDir, reach);
   if (struck) {
     reach = struck.distance;
@@ -2052,7 +2394,12 @@ function step(dt) {
       return along > 0 && along < reach + 0.6 && toStaff.addScaledVector(aimDir, -along).length() < 0.55;
     }) : null;
     if (staff) { strangle(staff, player.group.position); hitFlash = 0.15; commitCrime(); }
-    if (lizard && lizard.distance <= gun.range) {
+    const dogStruck = findDogHit(dogs, camera.position, aimDir, Math.min(reach, gun.range));
+    if (dogStruck && (!struck || dogStruck.distance < struck.distance)) { // a dog was in the way
+      hurtDog(dogStruck.dog, gun.damage);
+      hitFlash = 0.15;
+      if (!dogStruck.dog.breed.hostile) commitCrime(); // shooting somebody's pet is a crime; a guard dog is self-defence
+    } else if (lizard && lizard.distance <= gun.range) {
       killIguana(lizard.iguana);
       hitFlash = 0.15;
     } else if (struck && struck.distance <= gun.range) {
@@ -2061,7 +2408,7 @@ function step(dt) {
       if (testView.get('npc') === 'kill') killed = hitNpc(struck.npc, player.group.position) || killed;
       hitFlash = 0.15;
       if (killed) dropCash(struck.npc.group.position, struck.npc.gang ? [10, 20, 50][Math.floor(Math.random() * 3)] : undefined);
-      if (!struck.npc.gang) commitCrime(); // the police don't mind what happens to gang members
+      if (!struck.npc.gang) commitCrime(killed ? (struck.npc.officer ? 3 : 2) : 1); // the police don't mind what happens to gang members
       if (testView.has('npc')) console.log(killed ? 'TEST npc killed' : 'TEST npc hit');
     }
   }
@@ -2171,10 +2518,13 @@ function step(dt) {
   }
   updateStore(store, player.group.position, dt);
   updateBeerShop(beerShop, player.group.position, dt);
+  updateBeerShop(gatorBank, player.group.position, dt); // (the bank's doors slide the same way)
   updateGasStation(gasStation, player.group.position, dt);
   updateGunShop(gunShop, player.group.position, dt);
   updateCity(city, player.group.position, dt);
   updateSea(seaParts, time);
+  updateSeaLife(seaLife, time, dt, player.group.position, flagShown === 'purple');
+  if (testView.has('shark')) { const fish = seaLife.sharks[0].group; fish.position.set(player.group.position.x + 0.4, player.group.position.y + 1.1, player.group.position.z + 3.6); fish.rotation.y = Number(testView.get('shark')) || 1.57; } // ?shark holds one in front of the camera
   updateTurfs(time);
   healOverTime(dt);
   if (testView.has('bleed') && player.bones && Math.floor(gameTime / 1.5) !== Math.floor((gameTime - dt) / 1.5)) hurtPlayer(8); // ?bleed: take a hit every so often, to check the blood
@@ -2256,6 +2606,26 @@ function step(dt) {
     usePrompt.style.display = 'block';
   } else if (casinoOpen) usePrompt.style.display = 'none';
   updateCasino(dt);
+  updateBeach(dt);
+  updateJob(dt);
+  if (testView.has('dog') && !updateJob.dogShown && player.bones) { // ?dog=0,9 stands those two dogs in front of the camera, for checking how they look
+    updateJob.dogShown = true;
+    player.group.visible = false;
+    testView.get('dog').split(',').map(Number).forEach((index, n) => {
+      const dog = dogs[index];
+      dog.show = true;
+      dog.group.position.set(player.group.position.x - 1.05 + n * 1.15, 0, player.group.position.z + 1.0);
+      dog.group.rotation.y = Number(testView.get('dogturn') ?? 2.2);
+    });
+  }
+  // Dogs. A bite hurts; a friendly dog close by can be patted.
+  updateDogs(dogs, dt, time, player.group.position, { driving: driving || !!boating, wanted: stars, onBite: (dog, damage) => {
+    if (downed || jailed > 0 || arresting) return;
+    if (health - damage <= 0) deathCause = `${dog.name} the ${dog.label} finished you off.`;
+    hurtPlayer(damage);
+  } });
+  const pal = !driving && !boating && !chatOpen ? dogNear(dogs, player.group.position, 1.9) : null;
+  if (pal && !pal.breed.hostile && pal.state !== 'flee' && usePrompt.style.display !== 'block') { usePrompt.textContent = `Press E to pat ${pal.name} the ${pal.label}`; usePrompt.style.display = 'block'; }
   if (boxOpen && !atBookie()) setBox(false);
   if (atBookie() && !boxOpen) { usePrompt.textContent = 'Press E to talk to the bookie'; usePrompt.style.display = 'block'; } else if (boxOpen) usePrompt.style.display = 'none';
   updateBoxing(dt);
@@ -2280,6 +2650,7 @@ function step(dt) {
   }
   if (driving || boating) gun.mesh.visible = false;
   updatePolice(dt);
+  updatePoliceFire(dt);
   // Where he is and which way the camera looks, so that only people who could be seen are worked out and drawn.
   camera.getWorldDirection(lookWay);
   const flat = Math.hypot(lookWay.x, lookWay.z);
@@ -2318,7 +2689,7 @@ function step(dt) {
     night: isNight(),
     wanted: wanted > 0,
     doors: [house.userData.open, house.userData.garageOpen, house.userData.fridgeAmount, store.userData.open, gasStation.userData.open,
-      gunShop.userData.open, gym.open, policeStation.userData.open, ...city.doors.map((door) => door.open), beerShop.userData.open, miamiPD.userData.open],
+      gunShop.userData.open, gym.open, policeStation.userData.open, ...city.doors.map((door) => door.open), beerShop.userData.open, miamiPD.userData.open, gatorBank.userData.open],
   });
   vintage.uniforms.time.value = time;
 
@@ -2329,5 +2700,6 @@ renderer.setAnimationLoop(() => {
   // ?ff=20 runs the game 20 times faster, for testing things that take a while.
   const repeats = Number(testView.get('ff')) || 1;
   for (let i = 0; i < repeats; i++) step(repeats > 1 ? 0.05 : dt);
+  underwaterLook(dt);
   composer.render();
 });

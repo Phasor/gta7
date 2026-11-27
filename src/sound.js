@@ -90,6 +90,12 @@ const SOUNDS = {
   pickup: () => tone(520, 0.12, { to: 900, volume: 0.15 }),
   error: () => { tone(160, 0.16, { type: 'square', volume: 0.08 }); tone(120, 0.2, { type: 'square', volume: 0.08, delay: 0.14 }); },
   lighter: () => { tone(2600, 0.03, { type: 'square', volume: 0.07 }); noise(0.45, { filter: 'bandpass', freq: 2200, q: 0.4, volume: 0.05, delay: 0.05, attack: 0.05 }); },
+  // Dogs: a big deep woof, a guard dog's harder bark, a little dog's yap, and a yelp of pain.
+  woof: () => { for (const at of [0, 0.19]) { tone(300, 0.15, { type: 'sawtooth', to: 150, volume: 0.2, delay: at }); noise(0.13, { filter: 'bandpass', freq: 750, q: 1.2, volume: 0.13, delay: at }); } },
+  bark: () => { tone(260, 0.13, { type: 'sawtooth', to: 120, volume: 0.26 }); noise(0.12, { filter: 'bandpass', freq: 1000, q: 1, volume: 0.2 }); },
+  yap: () => { for (const at of [0, 0.14]) { tone(640, 0.09, { type: 'sawtooth', to: 380, volume: 0.15, delay: at }); noise(0.07, { filter: 'bandpass', freq: 1700, q: 1.5, volume: 0.08, delay: at }); } },
+  yelp: () => { tone(900, 0.12, { to: 1500, volume: 0.16 }); tone(1500, 0.22, { to: 650, volume: 0.14, delay: 0.11 }); },
+  megaphone: () => { for (const [at, pitch] of [[0, 620], [0.16, 830]]) tone(pitch, 0.14, { type: 'square', volume: 0.1, delay: at }); noise(0.5, { filter: 'bandpass', freq: 1500, q: 2.5, volume: 0.06, delay: 0.3 }); },
   choke: () => { noise(0.32, { filter: 'bandpass', freq: 420 + Math.random() * 200, q: 3, volume: 0.1, attack: 0.05 }); tone(150, 0.3, { type: 'sawtooth', to: 95, volume: 0.05, attack: 0.05 }); }, // a strangled gasp
   cap: () => { noise(0.05, { filter: 'highpass', freq: 2500, volume: 0.2 }); tone(700, 0.09, { to: 1800, volume: 0.12 }); tone(2400, 0.05, { type: 'square', volume: 0.04, delay: 0.45 }); }, // a bottle cap coming off, then landing
   drink: () => { for (let gulp = 0; gulp < 3; gulp++) tone(300, 0.11, { to: 150, volume: 0.16, delay: gulp * 0.24 }); },

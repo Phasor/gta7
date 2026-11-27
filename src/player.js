@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { pushOut, floorAt, waterDepthAt } from './world.js';
+import { pushOut, floorAt, waterDepthAt, seaBedAt } from './world.js';
 
 const WALK_SPEED = 2.4;
 const SPRINT_SPEED = 6.5;
@@ -319,7 +319,7 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   }
   group.rotation.x = -Math.PI / 2 * player.down;
   if (group.children[0]) group.children[0].position.z = 0.12 * player.down; // rest on the ground, not in it
-  const crouching = input.crouch && player.onGround;
+  const crouching = input.crouch && player.onGround && !(player.swim > 0.5); // (in deep water C dives instead)
   const sprinting = input.sprint && !crouching;
   // In the lake: wading slows him down, and once it is deep enough he swims.
   const depth = waterDepthAt(group.position);
@@ -375,7 +375,12 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   group.rotation.x += 1.22 * player.swimTilt;
   // The ground, a raised floor such as inside the house, or the lake bed (he floats in deep water).
   // Swimming along he lies low in the water, with only his head, shoulders and back above it.
-  const floor = depth > 0 ? -Math.min(depth, 1.25) + 0.9 * player.swimTilt : floorAt(group.position);
+  // Diving: out in the sea, where it is deep enough, holding C takes him down toward the bottom
+  // and Space brings him back up. (input.surface: he is out of breath and has to come up.)
+  const deepest = Math.max(0, seaBedAt(group.position) - 1.75);
+  const goingDown = input.crouch && !input.surface ? 1.8 : 0, goingUp = input.jump || input.surface ? 2.6 : 0;
+  player.dive = swimming && deepest > 0 ? THREE.MathUtils.clamp((player.dive || 0) + (goingDown - goingUp) * dt, 0, deepest) : Math.max(0, (player.dive || 0) - 3 * dt);
+  const floor = depth > 0 ? -Math.min(depth, 1.25) + 0.9 * player.swimTilt - player.dive : floorAt(group.position);
   if (player.onGround) {
     group.position.y += (floor - group.position.y) * Math.min(1, 18 * dt); // step up or down
   } else {
@@ -467,27 +472,37 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
     player.swimTime = (player.swimTime || 0) + dt * (moving ? 5 : 2);
     sideways.set(1, 0, 0).applyQuaternion(group.quaternion);
     const s = player.swim, t = player.swimTime;
-    const crawl = Math.min(1, Math.max(0, (player.swimTilt - 0.3) / 0.5)); // 0 treading water, 1 swimming along
-    const tread = 1 - crawl;
+    // Under the surface he swims breast stroke; on top of it, front crawl (or treads water when still).
+    const breast = Math.min(1, Math.max(0, ((player.dive || 0) - 0.3) / 0.6));
+    const along = Math.min(1, Math.max(0, (player.swimTilt - 0.3) / 0.5)); // 0 upright, 1 lying flat and swimming along
+    const crawl = along * (1 - breast), tread = (1 - along) * (1 - breast);
+    // One breast stroke: the arms sweep out and round from in front, then the legs draw up and kick, then he glides.
+    const beat = (t * 0.11) % 1;
+    const pull = Math.sin(Math.PI * Math.min(1, beat / 0.5)), kick = Math.sin(Math.PI * Math.min(1, Math.max(0, (beat - 0.32) / 0.4)));
     forwards.set(0, 0, 1).applyQuaternion(group.quaternion);
     // Front crawl: each arm goes right round in turn. It reaches out ahead, pulls down and back
     // through the water, then lifts out behind him and swings forward over the top.
     // Treading water: both arms held out in front, sculling from side to side.
     for (const [arm, fore, side, lag] of [[b.armL, b.foreArmL, 1, 0], [b.armR, b.foreArmR, -1, Math.PI]]) {
       const round = Math.atan2(Math.sin(t + lag), Math.cos(t + lag));          // -pi..pi, round and round
-      turnBone(arm, sideways, s * (crawl * round + tread * (-0.95 + Math.sin(t * 1.3 + lag) * 0.12)));
+      turnBone(arm, sideways, s * (crawl * round + tread * (-0.95 + Math.sin(t * 1.3 + lag) * 0.12) - breast * (0.9 + 1.95 * along))); // (breast stroke: both arms stretched out ahead)
+      turnBone(arm, forwards, -s * breast * side * pull * 2.2);                                                   // ...then swept wide and round to his sides
       turnBone(arm, forwards, s * tread * side * (0.45 + Math.sin(t * 1.3) * 0.3));
       const overTheTop = Math.max(0, Math.sin(t + lag - 1.9));                 // the elbow bends as the arm comes forward out of the water
-      turnBone(fore, sideways, -s * (crawl * 0.9 * overTheTop + tread * 0.35));
+      turnBone(fore, sideways, -s * (crawl * 0.9 * overTheTop + tread * 0.35 + breast * 0.9 * pull * (1 - pull) * 4 * (beat > 0.25 ? 1 : 0)));
     }
     // Legs: a quick flutter kick when swimming along, a slow pedalling when treading water.
-    for (const [thigh, shin, lag] of [[b.thighL, b.shinL, 0], [b.thighR, b.shinR, Math.PI]]) {
-      const kick = Math.sin(t * 2.2 + lag);
-      turnBone(thigh, sideways, s * (crawl * kick * 0.32 + tread * (-0.35 + Math.sin(t * 1.5 + lag) * 0.3)));
-      turnBone(shin, sideways, s * (crawl * (0.18 + 0.18 * kick) + tread * (0.55 + Math.cos(t * 1.5 + lag) * 0.3)));
+    for (const [thigh, shin, lag, side] of [[b.thighL, b.shinL, 0, 1], [b.thighR, b.shinR, Math.PI, -1]]) {
+      const flutter = Math.sin(t * 2.2 + lag);
+      // The frog kick: knees drawn up and out, then driven back together.
+      turnBone(thigh, sideways, -s * breast * kick * 0.75);
+      turnBone(thigh, forwards, s * breast * side * kick * 0.5);
+      turnBone(shin, sideways, s * breast * kick * 1.5);
+      turnBone(thigh, sideways, s * (crawl * flutter * 0.32 + tread * (-0.35 + Math.sin(t * 1.5 + lag) * 0.3)));
+      turnBone(shin, sideways, s * (crawl * (0.18 + 0.18 * flutter) + tread * (0.55 + Math.cos(t * 1.5 + lag) * 0.3)));
     }
     // He holds his head up out of the water to see where he is going, and his back arches a little.
-    turnBone(b.head, sideways, -0.75 * s * crawl);
+    turnBone(b.head, sideways, -s * (0.75 * crawl + 0.55 * breast * along));
     turnBone(b.spine2, sideways, -0.22 * s * crawl);
     turnBone(b.spine, forwards, s * crawl * Math.sin(t) * 0.16);               // the shoulders roll with each stroke
   }

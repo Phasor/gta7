@@ -5,6 +5,7 @@
 // volleyball net and a wooden pier. You can wade in and swim; sailing boats
 // bob further out.
 import * as THREE from 'three';
+import { Reflector } from 'three/addons/objects/Reflector.js';
 import { sea, addObstacle, addFloor, addInterior } from './world.js';
 import { clearings, daylight } from './grass.js';
 import { block, canvasTexture, speckle, makeMaterials, addPalm } from './house.js';
@@ -14,10 +15,15 @@ const SAND = 0.15;         // the beach stands a little above the grass
 const WATER = 0.17;
 const PIER = 0.8;          // height of the pier's deck
 
-function seaMaterial(shoreX, fog, sunDirection) {
-  return new THREE.ShaderMaterial({
-    transparent: true,
+// The look of the water. It is clear enough to see the sand, the fish and the swimmer's own legs
+// through it, and it carries a true mirror image of the sky, the boats, the pier and the player
+// (tDiffuse, drawn for it by the Reflector it is used with).
+function seaShader(shoreX, fog, sunDirection) {
+  return {
     uniforms: {
+      tDiffuse: { value: null },
+      color: { value: null },
+      textureMatrix: { value: null },
       time: { value: 0 },
       daylight,
       shoreX: { value: shoreX },
@@ -26,17 +32,22 @@ function seaMaterial(shoreX, fog, sunDirection) {
       hazeRange: { value: new THREE.Vector2(fog.near, fog.far) },
     },
     vertexShader: /* glsl */ `
+      uniform mat4 textureMatrix;
       varying vec3 vWorld;
+      varying vec4 vMirror;
       void main() {
         vec4 world = modelMatrix * vec4(position, 1.0);
         vWorld = world.xyz;
+        vMirror = textureMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * viewMatrix * world;
       }`,
     fragmentShader: /* glsl */ `
       uniform float time, daylight, shoreX;
       uniform vec3 sunDir, hazeColor;
       uniform vec2 hazeRange;
+      uniform sampler2D tDiffuse;
       varying vec3 vWorld;
+      varying vec4 vMirror;
 
       float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       float noise(vec2 p) {
@@ -59,26 +70,43 @@ function seaMaterial(shoreX, fog, sunDirection) {
         float dist = length(toEye);
         vec3 v = toEye / dist;
 
+        // Seen from underneath: a bright, shifting ceiling of light.
+        if (cameraPosition.y < vWorld.y) {
+          float shimmer = noise(p * 0.7 + time * 0.5) * 0.6 + noise(p * 2.1 - time * 0.7) * 0.4;
+          vec3 ceiling = mix(vec3(0.10, 0.46, 0.55), vec3(0.78, 0.96, 1.0), smoothstep(0.35, 0.9, shimmer)) * daylight;
+          float murk = smoothstep(2.0, 44.0, dist);              // further off it is lost in the blue-green of the water
+          gl_FragColor = vec4(mix(ceiling, hazeColor, murk), mix(0.82, 1.0, murk));
+          return;
+        }
+
         // Clear turquoise in the shallows, deepening to blue further out.
-        vec3 col = mix(vec3(0.20, 0.78, 0.74), vec3(0.03, 0.30, 0.52), smoothstep(0.0, 70.0, out_));
+        vec3 col = mix(vec3(0.04, 0.60, 0.62), vec3(0.02, 0.26, 0.48), smoothstep(0.0, 70.0, out_));
         col = mix(col, vec3(0.02, 0.16, 0.36), smoothstep(60.0, 400.0, out_));
         col *= 0.88 + 0.24 * noise(p * 0.12 + time * 0.02);
 
         // Sky reflected at low angles, and the sun sparkling on the waves.
         float glance = pow(1.0 - max(dot(normal, v), 0.0), 3.0);
-        col = mix(col, vec3(0.72, 0.86, 0.95), glance * 0.55);
+        col *= daylight;
+        // The mirror image, rippled by the waves. Faint looking straight down, strong at a low angle.
+        vec3 mirror = texture2D(tDiffuse, vMirror.xy / vMirror.w + normal.xz * 0.09).rgb;
+        float fresnel = 0.03 + 0.97 * pow(1.0 - max(dot(normal, v), 0.0), 3.5);
+        float shine = clamp(max(fresnel, 0.14), 0.0, 1.0);           // (always a little, so he can see himself looking down)
+        col = mix(col, mirror, shine * 0.9);
         col += vec3(1.0, 0.95, 0.8) * pow(max(dot(reflect(-sunDir, normal), v), 0.0), 120.0) * 0.9;
 
         // White foam: a wobbly line at the water's edge and lines of surf rolling in behind it.
         float edge = 1.0 - smoothstep(0.0, 1.4 + sin(p.y * 0.5 + time) * 0.6, out_);
         float surf = smoothstep(0.62, 0.8, noise(vec2(p.y * 0.35, out_ * 0.7 + time * 0.9))) * (1.0 - smoothstep(2.0, 14.0, out_));
-        col = mix(col, vec3(1.0), clamp(edge + surf * 0.8, 0.0, 1.0) * 0.85);
+        float foam = clamp(edge + surf * 0.8, 0.0, 1.0) * 0.85;
+        col = mix(col, vec3(1.0) * daylight, foam);
 
-        col *= daylight;
         col = mix(col, hazeColor, smoothstep(hazeRange.x, hazeRange.y, dist));
-        gl_FragColor = vec4(col, mix(0.55, 0.96, smoothstep(0.0, 22.0, out_))); // you can see the sand through the shallows
+        // Clear water: looking down you see right through to the bottom; at a low angle it is all reflection.
+        float see = mix(0.5, 0.84, smoothstep(0.0, 60.0, out_));     // the deeper the water, the bluer and less see-through
+        float alpha = max(mix(see, 0.96, fresnel), foam);
+        gl_FragColor = vec4(col, alpha);
       }`,
-  });
+  };
 }
 
 // A small sailing boat, as scenery out on the water.
@@ -125,12 +153,43 @@ export function createSea(scene, shoreX, fog, sunDirection) {
       ctx.stroke();
     }
   }, 14, 120) });
-  block(group, sand, 62, SAND, beachLength, beachStart + 31, SAND / 2, 0).castShadow = false;
+  block(group, sand, 40.4, SAND, beachLength, beachStart + 20.2, SAND / 2, 0).castShadow = false;
+  // The sea bed: sand sloping down from the water's edge to nine metres deep, then flat.
+  const bedSand = new THREE.MeshStandardMaterial({ roughness: 1, map: canvasTexture(128, (ctx, s) => {
+    ctx.fillStyle = '#e2cf9c';
+    ctx.fillRect(0, 0, s, s);
+    speckle(ctx, s, 5000, 0.07);
+    for (let i = 0; i < 9; i++) { // ripples left by the waves
+      ctx.strokeStyle = 'rgba(150,120,70,0.25)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const y = (i + 0.5) * s / 9;
+      ctx.moveTo(0, y);
+      ctx.bezierCurveTo(s * 0.3, y + 5, s * 0.6, y - 5, s, y);
+      ctx.stroke();
+    }
+  }, 1, 1) });
+  const bed = new THREE.BufferGeometry();
+  const stations = [[0, SAND], [76, SAND - 9.12], [2600, SAND - 9.12]], halfLong = 2100, corners = [], lookups = [];
+  for (const [out, height] of stations) for (const side of [-1, 1]) { corners.push(shoreX + out, height, side * halfLong); lookups.push(out / 5, side * halfLong / 5); }
+  bed.setAttribute('position', new THREE.Float32BufferAttribute(corners, 3));
+  bed.setAttribute('uv', new THREE.Float32BufferAttribute(lookups, 2));
+  bed.setIndex([0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5]);
+  bed.computeVertexNormals();
+  const seaBed = new THREE.Mesh(bed, bedSand);
+  seaBed.receiveShadow = true;
   addFloor(beachStart, shoreX + 22, -beachLength / 2, beachLength / 2, SAND);
   clearings[42].set(beachStart - 0.5, -5000, 9000, 5000);
 
   // The water.
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(2600, 4200), seaMaterial(shoreX, fog, sunDirection));
+  // It is a mirror: each frame it draws a small upside-down picture of the things marked for it
+  // (the sky, the player, the boats, the pier and the beach), which the water's surface then shows.
+  const water = new Reflector(new THREE.PlaneGeometry(2600, 4200), { shader: seaShader(shoreX, fog, sunDirection), textureWidth: 512, textureHeight: 512, clipBias: 0.03, multisample: 0 });
+  water.material.uniforms.daylight = daylight;                 // (kept as the shared values, so the water darkens at night with everything else)
+  water.material.uniforms.hazeColor.value = fog.color;
+  Object.assign(water.material, { transparent: true, depthWrite: false, side: THREE.DoubleSide });
+  water.camera.layers.set(1);                                  // the mirror only looks at things on layer 1
+  water.renderOrder = 2;                                       // drawn after the jellyfish and anything else see-through that is under it
   water.rotation.x = -Math.PI / 2;
   water.position.set(shoreX + 1300, WATER, 0);
   group.add(water);
@@ -144,7 +203,7 @@ export function createSea(scene, shoreX, fog, sunDirection) {
   for (const pz of [-13.5, 4.5]) block(group, plain(0x3fb6c4, 0.6), 0.9, 1.3, 0.9, beachStart - 0.3, 0.65, pz);
   const boardZ = 9;
   for (const pz of [boardZ - 2.2, boardZ + 2.2]) { block(group, plain(0x8a6240, 0.7), 0.25, 3.2, 0.25, beachStart + 3, 1.6, pz); addObstacle(beachStart + 2.8, beachStart + 3.2, pz - 0.2, pz + 0.2, 3.3); }
-  block(group, new THREE.MeshBasicMaterial({ map: label('PALM BEACH', 'SWIM AT YOUR OWN RISK · NO LIFEGUARD AFTER DARK', '#2f9bb5', '#fff8e8', 1024, 256) }), 0.14, 1.3, 5.2, beachStart + 3, 2.7, boardZ);
+  block(group, new THREE.MeshBasicMaterial({ map: label('PALM BEACH', 'CHECK THE FLAG BEFORE YOU SWIM', '#2f9bb5', '#fff8e8', 1024, 256) }), 0.14, 1.3, 5.2, beachStart + 3, 2.7, boardZ);
 
   // Palm trees along the top of the beach.
   for (let pz = -beachLength / 2 + 14; pz < beachLength / 2; pz += 26) {
@@ -175,20 +234,71 @@ export function createSea(scene, shoreX, fog, sunDirection) {
     block(group, plain(colours[(n + 2) % colours.length], 1), 1.0, 0.02, 1.9, px + 3.2, SAND + 0.012, pz + 0.6).rotation.y = 0.4; // towel
   }
 
-  // Lifeguard tower: a hut on stilts with a ramp and a flag.
-  const tx = shoreX - 16, tz = -34;
-  const wood = plain(0xf2efe6, 0.8), trimPaint = plain(0xe0483a, 0.7);
-  for (const [lx, lz] of [[-1.3, -1.3], [1.3, -1.3], [-1.3, 1.3], [1.3, 1.3]]) block(group, wood, 0.2, 2.2, 0.2, tx + lx, SAND + 1.1, tz + lz);
-  block(group, wood, 3.4, 0.16, 3.4, tx, SAND + 2.2, tz);
-  block(group, wood, 2.4, 1.8, 2.4, tx - 0.3, SAND + 3.18, tz);
-  block(group, trimPaint, 3.0, 0.16, 3.0, tx - 0.3, SAND + 4.16, tz);
-  block(group, plain(0x26343c, 0.2), 0.05, 0.8, 1.5, tx + 0.92, SAND + 3.3, tz);                      // window facing the sea
-  const ramp = block(group, wood, 3.2, 0.12, 1.0, tx - 2.9, SAND + 1.1, tz + 1.1);
-  ramp.rotation.z = 0.72;
-  block(group, plain(0x8f9396, 0.5), 0.06, 2.6, 0.06, tx + 1.2, SAND + 5.5, tz + 1.2);
-  block(group, plain(0xf2c230, 0.8), 0.9, 0.55, 0.03, tx + 1.68, SAND + 6.45, tz + 1.2);              // flag
-  block(group, new THREE.MeshBasicMaterial({ map: label('LIFEGUARD', null, '#e0483a', '#fff8e8', 256, 64) }), 2.2, 0.45, 0.05, tx - 0.3, SAND + 3.75, tz + 1.24);
-  addObstacle(tx - 1.7, tx + 1.7, tz - 1.7, tz + 1.7, SAND + 4.3);
+  // The lifeguard station: a low white surf-rescue building with a glassed-in lookout on its
+  // roof, rescue boards outside, and a tall pole flying today's flag. It faces the sea (+X).
+  const tx = shoreX - 17, tz = -34;
+  const white = plain(0xf4f2ea, 0.85), blue = plain(0x1f6fb5, 0.6), redPaint = plain(0xd9281e, 0.6), dark = plain(0x26343c, 0.2);
+  block(group, plain(0xcfc8b6, 1), 6.0, 0.2, 5.4, tx, SAND + 0.1, tz);                                  // concrete apron
+  block(group, white, 5.0, 2.7, 4.4, tx, SAND + 1.55, tz);                                              // the building
+  block(group, blue, 5.06, 0.5, 4.46, tx, SAND + 0.45, tz);                                             // blue band round the bottom
+  block(group, white, 5.6, 0.18, 5.0, tx, SAND + 2.99, tz);                                             // roof, overhanging
+  block(group, redPaint, 5.64, 0.1, 5.04, tx, SAND + 3.13, tz);
+  block(group, dark, 0.05, 1.0, 2.6, tx + 2.52, SAND + 1.9, tz - 0.5);                                  // big window toward the sea
+  block(group, blue, 0.06, 2.0, 0.95, tx + 2.52, SAND + 1.2, tz + 1.5);                                 // door
+  block(group, new THREE.MeshBasicMaterial({ map: label('LIFEGUARD', 'PALM BEACH SURF RESCUE', '#d9281e', '#fff8e8', 512, 128) }), 0.05, 0.6, 3.6, tx + 2.54, SAND + 2.62, tz);
+  block(group, new THREE.MeshBasicMaterial({ map: label('LIFEGUARD', null, '#d9281e', '#fff8e8', 512, 96) }), 0.05, 0.5, 3.2, tx - 2.54, SAND + 2.5, tz);
+  // The lookout on the roof: glass all round under a red cap, and a rail.
+  block(group, white, 2.6, 0.5, 2.8, tx + 0.8, SAND + 3.43, tz);
+  block(group, dark, 2.5, 1.0, 2.7, tx + 0.8, SAND + 4.18, tz);
+  for (const [cx, cz] of [[-1.25, -1.35], [1.25, -1.35], [-1.25, 1.35], [1.25, 1.35]]) block(group, white, 0.12, 1.0, 0.12, tx + 0.8 + cx, SAND + 4.18, tz + cz);
+  block(group, redPaint, 3.2, 0.16, 3.4, tx + 0.8, SAND + 4.76, tz);
+  block(group, white, 0.06, 0.06, 4.8, tx - 2.6, SAND + 3.9, tz);
+  for (const pz of [-2.3, 0, 2.3]) block(group, white, 0.06, 0.8, 0.06, tx - 2.6, SAND + 3.5, tz + pz);
+  // Rescue boards leaning on the wall, and a rescue float on a hook.
+  for (const [pz, colour] of [[-2.9, 0xf2c230], [-3.3, 0xd9281e]]) {
+    const board = block(group, plain(colour, 0.5), 0.5, 2.6, 0.09, tx + 1.2, SAND + 1.45, tz + pz);
+    board.rotation.x = pz < -3 ? -0.2 : -0.12;
+  }
+  block(group, plain(0xe0661e, 0.5), 0.14, 0.7, 0.26, tx + 2.6, SAND + 1.6, tz + 0.7);
+  addObstacle(tx - 2.5, tx + 2.5, tz - 2.2, tz + 2.2, SAND + 5);
+  // The flag: high on a pole beside the station. Its colour is set each day by the game.
+  const flagCloth = new THREE.MeshBasicMaterial({ color: 0x2fae4a, side: THREE.DoubleSide });
+  block(group, plain(0x8f9396, 0.5), 0.1, 9, 0.1, tx + 3.6, SAND + 4.5, tz + 3.4);
+  block(group, flagCloth, 0.04, 1.2, 2.0, tx + 3.6, SAND + 8.3, tz + 4.45);
+  addObstacle(tx + 3.5, tx + 3.7, tz + 3.3, tz + 3.5, 9);
+  // A board by the way onto the beach that says what each flag means.
+  const key = document.createElement('canvas');
+  key.width = 512;
+  key.height = 384;
+  const pen = key.getContext('2d');
+  pen.fillStyle = '#fff8e8';
+  pen.fillRect(0, 0, 512, 384);
+  pen.fillStyle = '#1f6fb5';
+  pen.fillRect(0, 0, 512, 70);
+  pen.fillStyle = '#fff8e8';
+  pen.font = 'bold 40px Arial, sans-serif';
+  pen.textAlign = 'center';
+  pen.fillText('BEACH FLAGS', 256, 50);
+  pen.textAlign = 'left';
+  [['#2fae4a', 'GREEN', 'Go swim'], ['#f2c230', 'YELLOW', 'Swim with caution'], ['#d9281e', 'RED', 'High waves'], ['#7a3fc0', 'PURPLE', 'Dangerous sea life']].forEach(([colour, name, meaning], i) => {
+    pen.fillStyle = colour;
+    pen.fillRect(26, 92 + i * 72, 92, 52);
+    pen.fillStyle = '#16181c';
+    pen.font = 'bold 30px Arial, sans-serif';
+    pen.fillText(name, 138, 116 + i * 72);
+    pen.font = '25px Arial, sans-serif';
+    pen.fillText(meaning, 138, 143 + i * 72);
+  });
+  const keyPicture = new THREE.CanvasTexture(key);
+  keyPicture.colorSpace = THREE.SRGBColorSpace;
+  const keyX = beachStart + 9, keyZ = -19;
+  for (const side of [-1, 1]) { block(group, plain(0x8a6240, 0.7), 0.16, 2.9, 0.16, keyX, SAND + 1.45, keyZ + side * 1.3); addObstacle(keyX - 0.1, keyX + 0.1, keyZ + side * 1.3 - 0.1, keyZ + side * 1.3 + 0.1, 3); }
+  block(group, new THREE.MeshBasicMaterial({ map: keyPicture }), 0.08, 1.8, 2.4, keyX, SAND + 1.95, keyZ);
+  const guard = {
+    flag: flagCloth,
+    post: { x: tx + 3.9, z: tz - 0.6, facing: Math.PI / 2, lifeguard: true },   // where the lifeguard stands watching the water
+    ashore: new THREE.Vector3(tx + 5.5, SAND, tz + 1.5),                          // where he lays someone he has pulled out
+  };
 
   // Volleyball net.
   const vx = shoreX - 22, vz = 42;
@@ -256,8 +366,9 @@ export function createSea(scene, shoreX, fog, sunDirection) {
     return { group: ski, wake, heading, speed: 0, steer: 0, phase: i * 1.7, engine: null, jetSki: true, seat: { back: -0.25, height: 0.62 } };
   });
 
-  scene.add(group);
-  return { water, floats, skis, shoreX, boatBox, fishing, pier: { z: pierZ, from: pierFrom, to: pierTo } };
+  group.traverse((part) => part.layers.enable(1)); // everything on the beach and the water shows in the mirror
+  scene.add(group, seaBed);
+  return { water, floats, skis, shoreX, boatBox, fishing, guard, pier: { z: pierZ, from: pierFrom, to: pierTo } };
 }
 
 // Each frame: the waves move, and anything floating bobs on them.

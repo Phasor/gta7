@@ -127,6 +127,11 @@ export function roomLimit(position, origin, direction, maxDistance) {
   return maxDistance;
 }
 
+// How far down the sea bed is at a spot (0 on land). It shelves away from the beach to nine metres, so there is room to dive.
+export function seaBedAt(position) {
+  return sea.active && position.x > sea.x ? Math.min(9, (position.x - sea.x) * 0.12) : 0;
+}
+
 // How deep the lake is at a spot: 0 on land or on a jetty, getting deeper away from the bank.
 export function waterDepthAt(position) {
   if (sea.active && position.x > sea.x) { // the sea shelves gently away from the beach

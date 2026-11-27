@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { turnBoneBy } from './player.js';
-import { pushOut, floorAt, addObstacle } from './world.js';
+import { pushOut, floorAt, addObstacle, waterDepthAt } from './world.js';
 import { GANGS, POSTS } from './gangs.js';
 import { sfx } from './sound.js';
 import { FIGHTERS } from './boxing.js';
@@ -80,7 +80,8 @@ const recoloured = new Map();
 function recolour(material, degrees) {
   const image = material.map?.image;
   if (!degrees || !image) return material;
-  const prison = degrees === 'prison'; // a prisoner's orange overalls
+  // Whole outfits in one colour: a prisoner's orange overalls, a lifeguard's red kit, and the four people in the vault job.
+  const dyeHue = { prison: 0.07, lifeguard: 0.995, zora: 0.78, spike: 0.34, baron: 0.99, joe: 0.12 }[degrees];
   const cacheKey = material.uuid + ':' + degrees; // repainting is slow, so each outfit is only made once
   if (recoloured.has(cacheKey)) return recoloured.get(cacheKey);
   const canvas = document.createElement('canvas');
@@ -95,7 +96,7 @@ function recolour(material, degrees) {
     colour.setRGB(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255).getHSL(hsl);
     const skinOrHair = hsl.h < 0.14 || hsl.h > 0.97;
     if (skinOrHair && hsl.s >= 0.08) continue;
-    if (prison) colour.setHSL(0.07, 0.95, 0.3 + hsl.l * 0.35);
+    if (dyeHue !== undefined) colour.setHSL(dyeHue, 0.95, 0.3 + hsl.l * 0.35);
     else if (hsl.s >= 0.08) colour.setHSL((hsl.h + degrees / 360) % 1, hsl.s, hsl.l); // coloured cloth: new colour
     else colour.multiply(dye);                                                   // white or grey cloth: dyed
     d[i] = colour.r * 255; d[i + 1] = colour.g * 255; d[i + 2] = colour.b * 255;
@@ -176,9 +177,11 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
 
     npcs.cashiers = [];
     for (const cashierSpot of cashierSpots || []) {
-      const model = cloneSkinned(man.scene);
+      const base = cashierSpot.woman ? woman : man;
+      const model = cloneSkinned(base.scene);
+      if (cashierSpot.wear) addHeadwear(model, cashierSpot.wear); // a hat or hair that nobody else has
       if (cashierSpot.uniform) addUniform(model); // the police desk officer
-      else model.traverse((part) => { if (part.isMesh) part.material = recolour(part.material, cashierSpot.prisoner ? 'prison' : 330); });
+      else model.traverse((part) => { if (part.isMesh) part.material = recolour(part.material, cashierSpot.dye || (cashierSpot.prisoner ? 'prison' : cashierSpot.lifeguard ? 'lifeguard' : 330)); });
       const group = new THREE.Group();
       group.position.set(cashierSpot.x, cashierSpot.y ?? 0, cashierSpot.z); // (y: for people who stand upstairs)
       group.position.y = floorAt(group.position);
@@ -186,11 +189,13 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
       group.add(model);
       scene.add(group);
       const mixer = new THREE.AnimationMixer(model);
-      mixer.clipAction(man.clips[0]).play(); // standing idle
+      mixer.clipAction(base.clips[0]).play(); // standing idle
+      const runAction = cashierSpot.lifeguard ? mixer.clipAction(base.clips[2]) : null; // the lifeguard is the one who has to run
+      if (runAction) { runAction.play(); runAction.setEffectiveWeight(0); }
       const bones = ['Neck', 'Head', 'LeftArm', 'RightArm', 'LeftForeArm', 'RightForeArm', 'Spine'].map((name) => model.getObjectByName(name));
-      npcs.cashiers.push({ group, model, mixer, bones, clean: bones.map((bone) => bone.quaternion.clone()), look: 0,
+      npcs.cashiers.push({ runAction, idleAction: mixer.clipAction(base.clips[0]), name: cashierSpot.name, group, model, mixer, bones, clean: bones.map((bone) => bone.quaternion.clone()), look: 0,
         cashier: true, spot: cashierSpot, home: group.position.clone(), facing: cashierSpot.facing, handsUp: 0, choke: 0, chokeTime: 0, dead: 0, fall: 0,
-        meek: !cashierSpot.uniform && !cashierSpot.prisoner, // shop staff put their hands up at the sight of a gun
+        meek: !cashierSpot.uniform && !cashierSpot.prisoner && !cashierSpot.special, // shop staff put their hands up at the sight of a gun
         cb: { neck: bones[0], head: bones[1], armL: bones[2], armR: bones[3], foreL: bones[4], foreR: bones[5], spine: bones[6] } });
       addObstacle(cashierSpot.x - 0.3, cashierSpot.x + 0.3, cashierSpot.z - 0.3, cashierSpot.z + 0.3, group.position.y + 2.1, cashierSpot.y ? group.position.y - 0.3 : undefined);
     }
@@ -526,7 +531,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
   for (const cashier of npcs.cashiers || []) {
     // Shop staff who are out of sight are neither drawn nor moved.
     cashier.group.visible = inSight(view, cashier.group.position, 110);
-    if (!cashier.group.visible && npcs.grip?.victim !== cashier) continue;
+    if (!cashier.group.visible && npcs.grip?.victim !== cashier && !cashier.runTo) continue; // (a lifeguard on a rescue keeps going, seen or not)
     cashier.bones.forEach((bone, i) => bone.quaternion.copy(cashier.clean[i])); // undo last frame's head turn
     if (cashier.dead <= 0) cashier.mixer.update(dt);
     cashier.bones.forEach((bone, i) => cashier.clean[i].copy(bone.quaternion));
@@ -552,9 +557,27 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
       cashier.group.rotation.y = Math.atan2(hx, hz);
     }
     cashier.bend = (cashier.bend || 0) + (bend - (cashier.bend || 0)) * Math.min(1, 5 * dt);
-    if (cashier.dead <= 0) {
+    if (cashier.runTo && cashier.dead <= 0) {
+      // The lifeguard on a rescue: he sprints down the sand and ploughs out through the water.
+      const place = cashier.group.position, rx = cashier.runTo.x - place.x, rz = cashier.runTo.z - place.z, left = Math.hypot(rx, rz);
+      const depth = waterDepthAt(place);
+      cashier.running = left > 0.7;
+      if (cashier.running) {
+        const stride = Math.min(left, (depth > 0.5 ? 3.4 : 6.5) * dt);
+        place.x += rx / left * stride;
+        place.z += rz / left * stride;
+        cashier.group.rotation.y = Math.atan2(rx, rz);
+      }
+      place.y = depth > 0 ? -Math.min(depth, 1.1) : floorAt(place);
+    } else if (cashier.dead <= 0) {
+      cashier.running = false;
       cashier.group.position.x += (standX - cashier.group.position.x) * Math.min(1, 5 * dt);
       cashier.group.position.z += (standZ - cashier.group.position.z) * Math.min(1, 5 * dt);
+    }
+    if (cashier.runAction) {
+      cashier.pace = (cashier.pace || 0) + ((cashier.running ? 1 : 0) - (cashier.pace || 0)) * Math.min(1, 8 * dt);
+      cashier.runAction.setEffectiveWeight(cashier.pace);
+      cashier.idleAction.setEffectiveWeight(1 - cashier.pace);
     }
     if (cashier.bend > 0.01) {
       const side = axis.set(1, 0, 0).applyQuaternion(cashier.group.quaternion);
@@ -904,6 +927,8 @@ export function replyTo(who, said) {
     if (has(text, ['help', 'crime', 'stole', 'robbed'])) return { text: 'Report it at the front desk.' };
     return { text: pick(['Move along, sir.', 'Keep your nose clean.', 'Nothing to see here.', 'Stay out of trouble.']) };
   }
+  if (who.spot?.special) return { text: who.spot.say || 'Press E if you have business with me.' };
+  if (who.spot?.lifeguard) return { text: who.flagLine || 'Check the flag before you go in.' };
   if (who.gang) return { text: pick(['Get off our turf.', 'You talking to ME?', 'Walk away while you still can.', 'Wrong corner, friend.']) };
   if (who.spot?.prisoner) return { text: pick(['I didn\'t do it.', 'Got a cigarette?', 'Get me out of here, man.', 'The food in here is terrible.']) };
   if (rude) return who.cashier ? { text: 'There is no need for that. Buy something or leave.' } : { text: pick(['WHAT did you just say to me?!', 'Say that again. I dare you.', 'Oh, it is ON.']), angry: true };
@@ -931,6 +956,37 @@ export function replyTo(who, said) {
   if (who.cashier) return { text: pick(['Are you buying anything?', 'Press E if you want to see what we have.', 'Uh-huh. Anything else?']) };
   if (text.includes('?')) return { text: pick(['No idea, sorry.', 'Why are you asking me?', 'Could be. Who knows?', 'Hmm. Good question.', 'Ask the bookie, he knows everything.']) };
   return { text: pick(['Uh-huh.', 'If you say so.', 'Is that right?', 'Okay then.', 'Ha. Sure.', 'You are a strange one.', 'Right...', 'Good talk.']) };
+}
+
+// --- One-of-a-kind headwear ---------------------------------------------------------------------
+// For the people in the vault job, so each can be told from everyone else at a glance.
+function addHeadwear(model, kind) {
+  const head = model.getObjectByName('Head');
+  if (!head) return;
+  const cloth = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.7, ...extra });
+  const wear = (geometry, material, x, y, z) => { const mesh = new THREE.Mesh(geometry, material); mesh.position.set(x, y, z); mesh.castShadow = true; head.add(mesh); return mesh; };
+  if (kind === 'tophat') {                 // a tall red top hat
+    wear(new THREE.CylinderGeometry(0.17, 0.17, 0.014, 20), cloth(0xc0281e), 0, 0.2, 0.01);
+    wear(new THREE.CylinderGeometry(0.108, 0.104, 0.2, 20), cloth(0xc0281e), 0, 0.3, 0.01);
+    wear(new THREE.CylinderGeometry(0.11, 0.11, 0.035, 20), cloth(0x16181c), 0, 0.225, 0.01);
+  } else if (kind === 'mohawk') {          // a row of green spikes from front to back
+    for (let i = 0; i < 6; i++) {
+      const spike = wear(new THREE.ConeGeometry(0.035, 0.2 - Math.abs(i - 2.5) * 0.025, 6), cloth(0x3fd04a, { roughness: 0.4 }), 0, 0.25 - Math.abs(i - 2.5) * 0.012, 0.085 - i * 0.04);
+      spike.rotation.x = (2.5 - i) * 0.16;
+    }
+  } else if (kind === 'straw') {           // a wide straw sun hat
+    wear(new THREE.CylinderGeometry(0.27, 0.28, 0.012, 22), cloth(0xe6c86a, { roughness: 0.95 }), 0, 0.185, 0.01);
+    wear(new THREE.CylinderGeometry(0.105, 0.115, 0.1, 18), cloth(0xe6c86a, { roughness: 0.95 }), 0, 0.235, 0.01);
+    wear(new THREE.CylinderGeometry(0.117, 0.117, 0.025, 18), cloth(0x7a5a2a), 0, 0.2, 0.01);
+  } else if (kind === 'scarf') {           // a purple headscarf and big gold earrings
+    wear(new THREE.SphereGeometry(0.128, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.52), cloth(0x8a3fc0), 0, 0.105, -0.005);
+    for (const side of [-1, 1]) wear(new THREE.TorusGeometry(0.03, 0.007, 6, 14), new THREE.MeshStandardMaterial({ color: 0xe6b83a, roughness: 0.3, metalness: 0.8 }), side * 0.1, 0.03, 0.01);
+  } else if (kind === 'hood') {            // a dark hood pulled right up
+    wear(new THREE.SphereGeometry(0.14, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.62), cloth(0x1b1d22), 0, 0.1, -0.02);
+  } else if (kind === 'cap') {             // a flat grey cap
+    wear(new THREE.CylinderGeometry(0.125, 0.118, 0.045, 18), cloth(0x6f7376), 0, 0.19, 0.0);
+    wear(new THREE.BoxGeometry(0.16, 0.012, 0.09), cloth(0x6f7376), 0, 0.172, 0.13);
+  }
 }
 
 // --- Boxers -------------------------------------------------------------------------------------
