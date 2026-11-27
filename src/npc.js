@@ -21,21 +21,18 @@ const FOLDER = `${import.meta.env.BASE_URL}models/people/`;
 // `home` is where they hang about: the first six live round Palm Ave, and the
 // rest among the skyscrapers of Miami.
 const CITY_HUES = [0, 140, 200, 250, 90];
-const PEOPLE = [
-  { kind: 'woman', clothes: 0, height: 1.0 },
-  { kind: 'man', clothes: 0, height: 1.0 },
-  { kind: 'woman', clothes: 140, height: 0.95 },
-  { kind: 'man', clothes: 200, height: 1.05 },
-  { kind: 'woman', clothes: 250, height: 1.03 },
-  { kind: 'man', clothes: 90, height: 0.96 },
-  // Fourteen more, spread along the city street.
-  ...Array.from({ length: 14 }, (_, i) => ({
-    kind: i % 2 ? 'man' : 'woman',
-    clothes: CITY_HUES[(i * 2 + (i % 2)) % 5],
-    height: 0.95 + (i * 7 % 10) * 0.012,
-    home: [650 + i * 17, i % 2 ? -4 : -5],
-  })),
-];
+const NAMES = ['Maria', 'Dave', 'Carmen', 'Earl', 'Lucia', 'Hank', 'Rosa', 'Bobby', 'Gloria', 'Wayne', 'Ana', 'Travis', 'Marisol', 'Duke', 'Tina', 'Ray',
+  'Yolanda', 'Cody', 'Esther', 'Luis', 'Barb', 'Mateo', 'Debbie', 'Chuck', 'Ines', 'Randy', 'Pilar', 'Otis', 'Shelly', 'Jorge', 'Dot', 'Buck', 'Nina', 'Clyde', 'Elena', 'Gus'];
+// The crowd: 36 ordinary people. They are not tied to one place. Instead they are always
+// somewhere on the pavements near the player (see "The crowd" below), so wherever he goes
+// there are people about, and nobody far away has to be worked out or drawn.
+const PEOPLE = Array.from({ length: 36 }, (_, i) => ({
+  kind: i % 2 ? 'man' : 'woman',
+  clothes: CITY_HUES[(i * 2 + (i % 2)) % 5],
+  height: 0.94 + (i * 7 % 11) * 0.012,
+  stream: true,
+  name: NAMES[i],
+}));
 
 const WALK_SPEED = 1.4;
 const RUN_SPEED = 4.2;
@@ -192,7 +189,7 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
       mixer.clipAction(man.clips[0]).play(); // standing idle
       const bones = ['Neck', 'Head', 'LeftArm', 'RightArm', 'LeftForeArm', 'RightForeArm', 'Spine'].map((name) => model.getObjectByName(name));
       npcs.cashiers.push({ group, model, mixer, bones, clean: bones.map((bone) => bone.quaternion.clone()), look: 0,
-        cashier: true, home: group.position.clone(), facing: cashierSpot.facing, handsUp: 0, choke: 0, chokeTime: 0, dead: 0, fall: 0,
+        cashier: true, spot: cashierSpot, home: group.position.clone(), facing: cashierSpot.facing, handsUp: 0, choke: 0, chokeTime: 0, dead: 0, fall: 0,
         meek: !cashierSpot.uniform && !cashierSpot.prisoner, // shop staff put their hands up at the sight of a gun
         cb: { neck: bones[0], head: bones[1], armL: bones[2], armR: bones[3], foreL: bones[4], foreR: bones[5], spine: bones[6] } });
       addObstacle(cashierSpot.x - 0.3, cashierSpot.x + 0.3, cashierSpot.z - 0.3, cashierSpot.z + 0.3, group.position.y + 2.1, cashierSpot.y ? group.position.y - 0.3 : undefined);
@@ -264,6 +261,7 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
         clean: arm.slice(0, 2).map((part) => ({ bone: part, rotation: part.quaternion.clone() })),
         home: person.home ? new THREE.Vector3(person.home[0], 0, person.home[1]) : null,
         target: new THREE.Vector3(), pace: 0, strikeTime: 0, struck: false, still: false,
+        stream: !!person.stream, name: person.name, chatter: 4 + Math.random() * 25,
       };
       if (person.fighter !== undefined) { // a boxer: gloves on, and he stays in his corner
         npc.fighter = person.fighter;
@@ -290,7 +288,9 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
         npc.group.position.copy(testSpot);
         npc.group.rotation.y = 0;
         npc.still = true;
+        npc.stream = false;
       }
+      if (npc.stream) { npc.away = true; npc.retry = 0; npc.first = true; npc.group.visible = false; } // put on a pavement near the player on the first frame
       npcs.push(npc);
     });
   });
@@ -464,6 +464,10 @@ const OFFICER_HEALTH = 130, OFFICER_RESPAWN = 45; // tougher than most; a new of
 // gangs: { canTarget, onShot(npc, hit), onAlert(npc) }. Gang members shoot at the player when he
 // trespasses on their turf or attacks one of them.
 export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
+  const view = npcs.view || { x: playerPosition.x, z: playerPosition.z, cx: playerPosition.x, cz: playerPosition.z, fx: 0, fz: 0 };
+  npcs.quiet = (npcs.quiet || 0) - dt; // a pause between passers-by speaking
+  view.drawn = 0;
+  for (const npc of npcs) if (npc.stream && !npc.away && npc.group.visible) view.drawn++; // how many of the crowd are on screen
   for (const crew of Object.values(npcs.crews || {})) crew.alert = Math.max(0, crew.alert - dt);
   for (const line of npcs.tracers || []) line.material.opacity = Math.max(0, line.material.opacity - dt * 7);
   for (const cop of npcs.officers || []) {
@@ -486,6 +490,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     }
     cop.state = 'idle';
     const position = cop.group.position;
+    cop.group.visible = inSight(view, position);
     let pace = 0, heading = cop.post.facing;
     if (police?.wanted) {
       const dx = playerPosition.x - position.x, dz = playerPosition.z - position.z, distance = Math.hypot(dx, dz) || 1;
@@ -519,6 +524,9 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
   }
   // The cashier: stands still, and his head follows the player round the shop.
   for (const cashier of npcs.cashiers || []) {
+    // Shop staff who are out of sight are neither drawn nor moved.
+    cashier.group.visible = inSight(view, cashier.group.position, 110);
+    if (!cashier.group.visible && npcs.grip?.victim !== cashier) continue;
     cashier.bones.forEach((bone, i) => bone.quaternion.copy(cashier.clean[i])); // undo last frame's head turn
     if (cashier.dead <= 0) cashier.mixer.update(dt);
     cashier.bones.forEach((bone, i) => cashier.clean[i].copy(bone.quaternion));
@@ -578,6 +586,13 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
   for (const npc of npcs) {
     const position = npc.group.position;
     npc.timer -= dt;
+    // Crowd members with no place near the player wait off the map until one comes free.
+    if (npc.away) {
+      npc.retry -= dt;
+      if (npc.retry <= 0) { npc.retry = 0.6 + Math.random() * 0.8; joinCrowd(npc, view); }
+      continue;
+    }
+    npc.group.visible = inSight(view, position);
 
     if (npc.state === 'dead') {
       // Topple over (backwards, forwards or to one side) with limbs going
@@ -595,14 +610,29 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
       npc.tilt.rotation[npc.fallWay[0]] = npc.fallWay[1] * Math.PI / 2 * tipped;
       npc.tilt.position.y = 0.12 * tipped;
       for (const { bone, from, to: limp } of npc.deathPose) bone.quaternion.slerpQuaternions(from, limp, tipped);
-      if (npc.timer <= 0 && !npc.still) place(npc, npc.home ?? playerPosition); // city people come back in the city
+      if (npc.timer <= 0 && npc.stream) leaveCrowd(npc);                              // a new face turns up somewhere out of sight
+      else if (npc.timer <= 0 && !npc.still) place(npc, npc.home ?? playerPosition); // city people come back in the city
       else if (npc.timer <= 0 && npc.corner && !npc.getUp && !npc.inBout) reviveNpc(npc); // a boxer is back on his feet in his corner
       continue;
     }
 
     const toPlayerX = playerPosition.x - position.x, toPlayerZ = playerPosition.z - position.z;
     const playerDistance = Math.hypot(toPlayerX, toPlayerZ);
-    let pace = 0;       // 0 standing, 1 walking, 2 running
+    // Left behind: once he is a long way off (or well behind the camera), this person is taken away and can turn up ahead instead.
+    if (npc.stream && npcs.grip?.victim !== npc && (npc.state === 'idle' || npc.state === 'walk') && !(npc.talkTime > 0)
+      && (playerDistance > GONE || (playerDistance > 58 && !npc.group.visible && Math.random() < dt * 0.6)
+        || (playerDistance > 72 && view.drawn > MOST_DRAWN + 2 && Math.random() < dt))) { // (and when too many are on screen, the furthest specks go)
+      if (npc.group.visible) view.drawn--;
+      leaveCrowd(npc);
+      continue;
+    }
+    // Passers-by say something now and then when he is close, and cry out at the sight of a gun.
+    npc.chatter -= dt;
+    if (!npc.gang && npc.fighter === undefined && playerDistance < 7 && npc.chatter <= 0 && npcs.quiet <= 0 && (npc.state === 'idle' || npc.state === 'walk')) {
+      speak(npc, pick(npcs.threat ? SCARED : AMBIENT));
+      npc.chatter = 18 + Math.random() * 30;
+      npcs.quiet = 3.5;
+    }    let pace = 0;       // 0 standing, 1 walking, 2 running
     let heading = null; // the way they want to face
     const held = npcs.grip?.victim === npc;
     npc.choke = (npc.choke || 0) + ((held ? 1 : 0) - (npc.choke || 0)) * Math.min(1, 5 * dt);
@@ -649,19 +679,39 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
           heading = npc.postFacing;
         }
       }
+    } else if (npc.talkTime > 0 && (npc.state === 'idle' || npc.state === 'walk')) {
+      // Being spoken to: they stop and face him.
+      npc.talkTime -= dt;
+      heading = Math.atan2(toPlayerX, toPlayerZ);
+      if (playerDistance > 9) npc.talkTime = 0;
     } else if (npc.state === 'idle') {
-      if (npc.timer <= 0 && !npc.still) wander(npc, 6, 18);
+      if (npc.timer <= 0 && !npc.still) { if (npc.stream) stroll(npc); else wander(npc, 6, 18); }
     } else if (npc.state === 'walk') {
       const dx = npc.target.x - position.x, dz = npc.target.z - position.z;
       const distance = Math.hypot(dx, dz);
       if (distance < 0.5 || npc.timer <= 0) {
         npc.state = 'idle';
-        npc.timer = 1.5 + Math.random() * 4;
+        npc.timer = Math.random() < 0.6 ? 0 : 1.5 + Math.random() * 4; // most of the time they keep walking
+        if (npc.nextLane) { npc.lane = npc.nextLane; npc.nextLane = null; }
       } else {
+        const beforeX = position.x, beforeZ = position.z;
         position.x += dx / distance * WALK_SPEED * dt;
         position.z += dz / distance * WALK_SPEED * dt;
+        pushOut(position, 0.35);
         heading = Math.atan2(dx, dz);
         pace = 1;
+        // Not getting anywhere? Something solid is in the way. Rather than walk on the spot
+        // against it, they turn round and go another way.
+        const made = Math.hypot(position.x - beforeX, position.z - beforeZ);
+        npc.stuck = made < WALK_SPEED * dt * 0.45 ? (npc.stuck || 0) + dt : 0;
+        if (npc.stuck > 0.5) {
+          npc.stuck = 0;
+          npc.blocked = (npc.blocked || 0) + 1;
+          if (npc.stream && npc.blocked >= 4 && !npc.group.visible) leaveCrowd(npc); // properly boxed in, and nobody is looking
+          else if (npc.stream) { npc.dir = -npc.dir; npc.nextLane = null; stroll(npc, true); }
+          else wander(npc, 4, 12);
+          if (npc.away) continue;
+        } else if (made > WALK_SPEED * dt * 0.9) npc.blocked = 0;
       }
     } else if (npc.state === 'chase') {
       // Angry: run straight at the player.
@@ -691,7 +741,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
         }
       }
       if (npc.strikeTime >= 1) {
-        if (npc.still) { npc.state = 'idle'; npc.timer = 99; } else wander(npc, 10, 18); // point made; they walk off
+        if (npc.still) { npc.state = 'idle'; npc.timer = 99; } else if (npc.stream) stroll(npc); else wander(npc, 10, 18); // point made; they walk off
       }
     }
 
@@ -714,6 +764,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
 
     // Undo last frame's arm swing before animating (the animation system only
     // rewrites a bone when its animated value changes), then remember the clean pose.
+    if (!npc.group.visible) continue; // out of sight: no need to animate them
     for (const { bone, rotation } of npc.clean) bone.quaternion.copy(rotation);
     npc.mixer.update(dt);
     for (const entry of npc.clean) entry.rotation.copy(entry.bone.quaternion);
@@ -721,6 +772,165 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     if (npc.gang && npc.aiming) poseAim(npc, playerPosition);
     if (npc.choke > 0.01) poseChoked(npc, npc.choke, (npc.chokeTime || 0) / CHOKE_TIME);
   }
+}
+
+// --- The crowd ------------------------------------------------------------------------------------
+// Ordinary people keep to the pavements: both sides of the long main road, and both sides of
+// Brew St either side of the junction. Each lane is a straight line with nothing built on it.
+const LANES = [
+  { along: 'x', at: -7.95, from: -300, to: 930, wide: 0.5 }, { along: 'x', at: -0.8, from: -300, to: 930, wide: 0.6 }, // (the near one keeps clear of the lamp posts)
+  { along: 'z', at: 620.3, from: -54, to: -11.5, wide: 0.4 }, { along: 'z', at: 627.4, from: -54, to: -11.5, wide: 0.3 }, // (kept clear of the lamp posts and signs)
+  { along: 'z', at: 620.3, from: 2.5, to: 33, wide: 0.4 }, { along: 'z', at: 627.4, from: 2.5, to: 33, wide: 0.3 },
+];
+const LANE_ODDS = [0, 0, 0, 0, 1, 1, 1, 1, 2, 3, 4, 5]; // most people are on the main road
+const FAR = 92, GONE = 112;   // how far out people are put, and how far away they are taken off again
+const MOST_DRAWN = 14;        // no more than this many are brought into view ahead of him
+const spot = new THREE.Vector3();
+// Whether somebody at `position` could be on screen: close by, or roughly in front of the camera.
+function inSight(view, position, limit = 170) {
+  const dx = position.x - view.cx, dz = position.z - view.cz, distance = Math.hypot(dx, dz);
+  if (distance < 9) return true;
+  if (distance > limit) return false;
+  if (view.fx === 0 && view.fz === 0) return true; // looking straight up or down: everything might be
+  return (dx * view.fx + dz * view.fz) / distance > 0.25;
+}
+// Take somebody out of the crowd (they are parked far off the map, and nothing is worked out for them).
+function leaveCrowd(npc) {
+  npc.away = true;
+  npc.retry = 0.3 + Math.random();
+  npc.group.visible = false;
+  npc.group.position.set(1e5, -500, 1e5);
+}
+// Bring somebody into the crowd on a pavement near the player, but never where he would see them pop up:
+// only behind the camera, or so far ahead that they are a speck.
+function joinCrowd(npc, view) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const lane = LANES[LANE_ODDS[(Math.random() * LANE_ODDS.length) | 0]];
+    const off = Math.abs((lane.along === 'x' ? view.z : view.x) - lane.at);
+    if (off > FAR) continue;
+    const reach = Math.sqrt(FAR * FAR - off * off);
+    const t = (lane.along === 'x' ? view.x : view.z) + (Math.random() * 2 - 1) * reach;
+    if (t < lane.from || t > lane.to) continue;
+    const width = lane.wide ?? 0.8;
+    if (lane.along === 'x') spot.set(t, 0, lane.at + (Math.random() - 0.5) * width); else spot.set(lane.at + (Math.random() - 0.5) * width, 0, t);
+    const distance = Math.hypot(spot.x - view.x, spot.z - view.z);
+    // Never where he would see them appear: either out of sight and fairly close, or a speck in the
+    // distance ahead. And only so many in front of him at once, so the game never has a crowd to draw.
+    const seen = inSight(view, spot);
+    if (seen && view.drawn >= MOST_DRAWN) continue;
+    if (npc.first ? distance < 5 : distance < 16 || (seen ? distance < 74 : distance > 56)) continue;
+    if (seen) view.drawn++;
+    // Stand them up fresh: on their feet, full health, limbs straight.
+    npc.tilt.rotation.set(0, 0, 0);
+    npc.tilt.position.y = 0;
+    if (npc.deathPose) { for (const { bone, from } of npc.deathPose) bone.quaternion.copy(from); npc.deathPose = null; }
+    Object.assign(npc, { health: HEALTH, state: 'idle', timer: Math.random() * 2, fall: 0, away: false, first: false, lane, nextLane: null,
+      dir: Math.random() < 0.5 ? -1 : 1, stuck: 0, blocked: 0, talkTime: 0, getUp: false });
+    npc.group.position.copy(spot);
+    npc.group.rotation.y = lane.along === 'x' ? npc.dir * Math.PI / 2 : (npc.dir > 0 ? 0 : Math.PI);
+    return;
+  }
+}
+// Walk on along the pavement: usually the same way, sometimes back, now and then across the road.
+function stroll(npc, straightBack = false) {
+  const lane = npc.lane, position = npc.group.position;
+  if (!straightBack && Math.random() < 0.2) npc.dir = -npc.dir;
+  const here = lane.along === 'x' ? position.x : position.z;
+  let t = here + npc.dir * (10 + Math.random() * 28);
+  if (t < lane.from + 1 || t > lane.to - 1) { npc.dir = -npc.dir; t = THREE.MathUtils.clamp(here + npc.dir * 14, lane.from + 1, lane.to - 1); }
+  let across = lane;
+  if (!straightBack && lane.along === 'x' && Math.random() < 0.12) { // cross to the other pavement
+    across = LANES[lane === LANES[0] ? 1 : 0];
+    npc.nextLane = across;
+    t = here + npc.dir * 3;
+  }
+  const side = across.at + (Math.random() - 0.5) * (across.wide ?? 0.8);
+  if (lane.along === 'x') npc.target.set(t, 0, side); else npc.target.set(side, 0, t);
+  npc.state = 'walk';
+  npc.timer = 45;
+}
+
+// --- Talking --------------------------------------------------------------------------------------
+// Whatever anyone is saying at the moment: [{ who, text, time }]. The game draws these as speech bubbles.
+export const speeches = [];
+export function speak(who, text, time = 3.6) {
+  const already = speeches.find((speech) => speech.who === who);
+  if (already) Object.assign(already, { text, time });
+  else speeches.push({ who, text, time });
+}
+const pick = (lines) => lines[(Math.random() * lines.length) | 0];
+const AMBIENT = ['Hot one today, huh?', 'Nice hat.', 'You seen the size of the gators in that lake?', 'Morning.', 'Excuse me.', 'I love this town.', 'Rent went up again.',
+  'Did you hear about the fight club?', 'I could go for a cold beer.', 'Watch out for the Sharks round here.', 'My feet are killing me.', 'Is that the guy from the penthouse?',
+  'Lost fifty at the casino last night.', 'Somebody stole my cousin\'s car.', 'Beach is lovely this time of day.', 'Hey.', 'Fish are biting off the pier, I hear.', 'Too many cops about lately.'];
+const SCARED = ['He\'s got a gun!', 'Don\'t shoot!', 'Whoa, whoa, easy!', 'Somebody call the police!', 'Please, I have kids!', 'Put that thing away!'];
+const ANGRY = ['What is WRONG with you?!', 'Oh, you want some?!', 'Come here!', 'You picked the wrong one, pal!', 'That\'s it!'];
+// The nearest living person in front of him, close enough to speak to.
+export function findListener(npcs, position, facing) {
+  let best = null, nearest = 4.5;
+  const consider = (who) => {
+    const dx = who.group.position.x - position.x, dz = who.group.position.z - position.z, distance = Math.hypot(dx, dz);
+    if (distance >= nearest || Math.abs(who.group.position.y - position.y) > 1.2) return;
+    if (distance > 0.3 && (dx * Math.sin(facing) + dz * Math.cos(facing)) / distance < 0.1) return;
+    best = who;
+    nearest = distance;
+  };
+  for (const npc of npcs) if (npc.state !== 'dead' && !npc.away) consider(npc);
+  for (const cop of npcs.officers || []) if (cop.state !== 'dead') consider(cop);
+  for (const cashier of npcs.cashiers || []) if (cashier.dead <= 0) consider(cashier);
+  return best;
+}
+// What somebody says back to whatever the player typed. Returns { text, angry, gift }.
+const has = (text, words) => words.some((word) => new RegExp(`(^|[^a-z])${word}`).test(text));
+const PLACES = [
+  [['police', 'cop', 'jail', 'prison'], 'The police station? Bottom of Brew St. Hard to miss the patrol cars.'],
+  [['beer', 'drink', 'bar', 'pub'], 'Cold Ones, top of Brew St. Cheapest beer in Miami.'],
+  [['casino', 'gambl', 'slot', 'roulette'], 'Lucky Palm Casino, on the main road. Don\'t bet the rent.'],
+  [['gun', 'weapon', 'knife', 'shoot'], 'Big Al\'s Guns, back on Palm Ave across from the gas station.'],
+  [['bank', 'atm', 'cash machine'], 'There\'s a cash machine outside Aqua Tower, and one by the casino.'],
+  [['box', 'fight', 'ring', 'champ'], 'Fight Club is next to Club Neon. Nobody beats Iron Vic.'],
+  [['fish', 'boat', 'sea', 'beach', 'pier', 'jet ski'], 'Keep going past the towers till you hit the beach. Boats are on the pier.'],
+  [['lake', 'gator', 'alligator', 'swim'], 'The lake is out past Palm Ave. I would not swim in it.'],
+  [['gym', 'train', 'weights', 'muscle'], 'Iron Gator Gym, on Palm Ave. Do you even lift?'],
+  [['food', 'eat', 'hungry', 'snack', 'shop', 'store', 'cigarette', 'smoke'], 'Sunny\'s Mart on Palm Ave has snacks, smokes, the lot.'],
+  [['hospital', 'doctor', 'hurt', 'sick'], 'Miami General is on the main road. Big red cross on it.'],
+  [['car', 'taxi', 'truck', 'drive', 'ride'], 'Plenty of cars parked about. Not that I am suggesting anything.'],
+];
+export function replyTo(who, said) {
+  const text = said.toLowerCase();
+  who.talkTime = 7;
+  const rude = has(text, ['stupid', 'idiot', 'ugly', 'hate you', 'shut up', 'dumb', 'loser', 'fat', 'moron', 'jerk', 'fool', 'trash', 'clown', 'suck', 'f+u+c+k', 'sh+i+t', 'b+i+t+c+h', 'ass(hole)?( |$)', 'kill you', 'punch you', 'fight me', 'your mom', 'your mum']);
+  if (who.officer || who.spot?.uniform) {
+    if (rude) return { text: 'Watch your mouth, or you are spending the night in the cells.' };
+    if (has(text, ['help', 'crime', 'stole', 'robbed'])) return { text: 'Report it at the front desk.' };
+    return { text: pick(['Move along, sir.', 'Keep your nose clean.', 'Nothing to see here.', 'Stay out of trouble.']) };
+  }
+  if (who.gang) return { text: pick(['Get off our turf.', 'You talking to ME?', 'Walk away while you still can.', 'Wrong corner, friend.']) };
+  if (who.spot?.prisoner) return { text: pick(['I didn\'t do it.', 'Got a cigarette?', 'Get me out of here, man.', 'The food in here is terrible.']) };
+  if (rude) return who.cashier ? { text: 'There is no need for that. Buy something or leave.' } : { text: pick(['WHAT did you just say to me?!', 'Say that again. I dare you.', 'Oh, it is ON.']), angry: true };
+  // Asking the way comes first, so "hello, where is the police station" gets directions and not just "hello".
+  if (has(text, ['where', 'how do i', 'direction', 'find', 'way to'])) for (const [words, answer] of PLACES) if (has(text, words)) return { text: answer };
+  if (has(text, ['hi', 'hello', 'hey', 'yo( |$)', 'sup', 'howdy', 'hola', 'good morning', 'good evening', 'whats up', 'what\'s up'])) return { text: pick(['Hey there!', 'Hello! Lovely day.', 'Oh, hi.', 'Hey, how is it going?', 'Hola!']) };
+  if (has(text, ['how are you', 'how r u', 'how you doing', 'how are u', 'you ok', 'you good'])) return { text: pick(['Can\'t complain. Well, I can, but who listens?', 'Living the dream.', 'Better now the sun is out.', 'Tired. You?']) };
+  if (has(text, ['your name', 'who are you', 'who r u', 'whats ur name', 'ur name'])) return { text: who.name ? `I'm ${who.name}. And you are?` : who.fighter !== undefined ? 'You will know my name when you wake up.' : 'I just work here.' };
+  if (has(text, ['money', 'cash', 'dollar', 'bucks', 'spare', 'give me', 'gimme', 'lend'])) {
+    if (!who.cashier && Math.random() < 0.2) return { text: 'Fine. Here is five bucks. Now leave me alone.', gift: 5 };
+    return { text: pick(['Do I look like a cash machine?', 'I am broke, pal.', 'Get a job.', 'Try the bookie at the Fight Club.']) };
+  }
+  if (has(text, ['thank', 'thx', 'cheers'])) return { text: pick(['No problem.', 'Any time.', 'You got it.']) };
+  if (has(text, ['bye', 'goodbye', 'see you', 'see ya', 'later', 'cya'])) { who.talkTime = 1; return { text: pick(['See ya.', 'Take care.', 'Stay safe out there.']) }; }
+  if (has(text, ['sorry', 'my bad', 'apolog'])) return { text: pick(['It is fine.', 'Forget about it.', 'Just watch it next time.']) };
+  if (has(text, ['love', 'nice', 'cool', 'beautiful', 'pretty', 'handsome', 'great', 'awesome', 'like you', 'like your', 'cute'])) return { text: pick(['Aw, thanks!', 'You are too kind.', 'Well aren\'t you sweet.', 'Ha! Thank you.']) };
+  if (has(text, ['joke', 'funny', 'laugh'])) return { text: pick(['Why did the gator cross the road? To eat the chicken.', 'My bank balance. That is the joke.', 'I would tell you one, but I have to be somewhere.']) };
+  if (has(text, ['weather', 'hot', 'sun', 'rain'])) return { text: 'It is Florida. It is hot. It is always hot.' };
+  if (has(text, ['time', 'clock', 'late'])) return { text: 'No watch, sorry. Look at the sky.' };
+  if (has(text, ['help', 'lost', 'where', 'how do i', 'direction', 'find'])) {
+    for (const [words, answer] of PLACES) if (has(text, words)) return { text: answer };
+    return { text: 'Where are you trying to get to? Most things are on the main road or Brew St.' };
+  }
+  for (const [words, answer] of PLACES) if (has(text, words)) return { text: answer };
+  if (who.cashier) return { text: pick(['Are you buying anything?', 'Press E if you want to see what we have.', 'Uh-huh. Anything else?']) };
+  if (text.includes('?')) return { text: pick(['No idea, sorry.', 'Why are you asking me?', 'Could be. Who knows?', 'Hmm. Good question.', 'Ask the bookie, he knows everything.']) };
+  return { text: pick(['Uh-huh.', 'If you say so.', 'Is that right?', 'Okay then.', 'Ha. Sure.', 'You are a strange one.', 'Right...', 'Good talk.']) };
 }
 
 // --- Boxers -------------------------------------------------------------------------------------
@@ -859,6 +1069,7 @@ function makeDeathPose(npc) {
 export function provokeNpc(npc) {
   if (npc.state === 'dead' || npc.state === 'strike' || npc.officer) return; // (officers just arrest you)
   if (npc.gang) { npc.crew.alert = 25; return; } // hurt one and the whole gang turns on you
+  if (npc.fighter === undefined) speak(npc, pick(ANGRY));
   npc.state = 'chase';
   npc.timer = 12; // seconds before they give up the chase
 }

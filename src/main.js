@@ -26,7 +26,7 @@ import { createTruck, updateTruck, setEngine } from './truck.js';
 import { createCars } from './cars.js';
 import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke, emitBloodMist } from './gun.js';
-import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, playStrike, findGrab, neckSpot, strangle, CHOKE_TIME, floorNpc, reviveNpc, debug as npcDebug } from './npc.js';
+import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, playStrike, findGrab, neckSpot, strangle, CHOKE_TIME, floorNpc, reviveNpc, speeches, speak, findListener, replyTo, debug as npcDebug } from './npc.js';
 
 const MAP_SIZE = 2800;    // playable area, metres along each side (big enough to reach the city)
 const GROUND_SIZE = 3200; // the grass carries on past the edge so the horizon looks endless
@@ -1441,6 +1441,90 @@ function updateMelee(dt, input) {
     }
   }
 }
+// --- Talking to people ------------------------------------------------------------------------------
+// People say things as he passes. Press T facing someone to talk: type anything, press Enter,
+// and they answer. What is said shows as a speech bubble over the speaker's head.
+const lookWay = new THREE.Vector3(), bubbleSpot = new THREE.Vector3();
+const bubbles = Array.from({ length: 6 }, () => overlay('display:none;transform:translate(-50%,-100%);font-size:14px;color:#1b1c1e;background:rgba(255,255,255,0.94);padding:5px 11px;border-radius:11px;max-width:250px;text-align:center;box-shadow:0 1px 5px rgba(0,0,0,0.45)'));
+const chatBox = document.createElement('input');
+chatBox.type = 'text';
+chatBox.maxLength = 80;
+chatBox.placeholder = 'Type what you want to say, then press Enter  (Esc to cancel)';
+chatBox.style.cssText = 'display:none;position:fixed;left:50%;bottom:150px;transform:translateX(-50%);width:440px;max-width:80%;font:16px system-ui,sans-serif;padding:10px 13px;border-radius:9px;border:2px solid #f3e6c0;background:rgba(28,34,22,0.96);color:#f3e9d2;outline:none';
+document.body.appendChild(chatBox);
+let chatOpen = false, chatWith = null, talkable = null, me = null;
+function openChat(who) {
+  chatOpen = true;
+  chatWith = who;
+  who.talkTime = 8;
+  keys.clear();
+  chatBox.value = '';
+  chatBox.style.display = 'block';
+  chatBox.focus();
+}
+function closeChat() {
+  chatOpen = false;
+  chatBox.style.display = 'none';
+  chatBox.blur();
+}
+function sayIt() {
+  const text = chatBox.value.trim().slice(0, 80), who = chatWith;
+  closeChat();
+  if (!text || !who) return;
+  me ??= { group: player.group, self: true };
+  speak(me, text, 4);
+  setTimeout(() => { // they take a moment, then answer
+    if (who.state === 'dead' || who.dead > 0 || who.away) return;
+    const answer = replyTo(who, text);
+    speak(who, answer.text, 4.5);
+    if (answer.gift) { money += answer.gift; showMoney(); sfx('coin'); persist(); }
+    if (answer.angry) provokeNpc(who);
+  }, 900);
+}
+chatBox.addEventListener('keydown', (e) => {
+  e.stopPropagation(); // the game must not treat these letters as controls
+  if (e.key === 'Enter') sayIt();
+  else if (e.key === 'Escape') closeChat();
+});
+chatBox.addEventListener('keyup', (e) => e.stopPropagation());
+function updateTalk(dt) {
+  if (testView.has('say') && !updateTalk.said && talkable) { updateTalk.said = true; chatWith = talkable; chatBox.value = testView.get('say'); sayIt(); } // ?say=hello says it to whoever is in front of him
+  if (testView.has('crowdsim') && !updateTalk.sim && npcs.length && player.bones) { // ?crowdsim runs a minute of street life at once and reports on it
+    updateTalk.sim = true;
+    setTimeout(() => {
+      let worstStuck = 0, wallTime = 0;
+      for (let frame = 0; frame < 1800; frame++) {
+        step(1 / 30);
+        for (const one of npcs) if (one.stream && !one.away) { worstStuck = Math.max(worstStuck, one.blocked || 0); if (one.stuck > 0.3) wallTime++; }
+      }
+      const crowd = npcs.filter((one) => one.stream), here = crowd.filter((one) => !one.away);
+      console.log(`TEST crowdsim: ${crowd.length} people, ${here.length} near him, ${here.filter((one) => one.group.visible).length} drawn, ${crowd.length - here.length} waiting off the map; ` +
+        `most turn-backs in a row ${worstStuck}, frames spent pushing at something ${wallTime}, nearest ${Math.min(...here.map((one) => Math.hypot(one.group.position.x - player.group.position.x, one.group.position.z - player.group.position.z))).toFixed(1)} m`);
+    }, 0);
+  }
+  if (chatOpen) { // while he is typing, nothing else happens, and they wait to hear it
+    punchQueued = false;
+    shotQueued = false;
+    keys.clear();
+    if (chatWith) chatWith.talkTime = 6;
+  }
+  talkable = !chatOpen && !driving && !boating && jailed <= 0 && player.bones ? findListener(npcs, player.group.position, player.group.rotation.y) : null;
+  for (let i = speeches.length - 1; i >= 0; i--) { speeches[i].time -= dt; if (speeches[i].time <= 0) speeches.splice(i, 1); }
+  bubbles.forEach((bubble, i) => {
+    const speech = speeches[i], body = speech?.who.group;
+    if (!speech || speech.who.away || !body.visible) return (bubble.style.display = 'none');
+    bubbleSpot.set(body.position.x, body.position.y + 2.05, body.position.z);
+    const distance = bubbleSpot.distanceTo(camera.position);
+    bubbleSpot.project(camera);
+    if (bubbleSpot.z > 1 || distance > 30 || Math.abs(bubbleSpot.x) > 1.15) return (bubble.style.display = 'none');
+    bubble.style.display = 'block';
+    bubble.style.left = `${(bubbleSpot.x * 0.5 + 0.5) * innerWidth}px`;
+    bubble.style.top = `${(-bubbleSpot.y * 0.5 + 0.5) * innerHeight}px`;
+    bubble.style.opacity = Math.min(1, speech.time * 2.5);
+    bubble.style.background = speech.who.self ? 'rgba(255,240,170,0.96)' : 'rgba(255,255,255,0.94)';
+    bubble.textContent = (speech.who.self ? 'You: ' : speech.who.name ? `${speech.who.name}: ` : '') + speech.text;
+  });
+}
 // Where he has to stand to use things.
 const near = (px, pz, reach) => Math.hypot(player.group.position.x - px, player.group.position.z - pz) < reach;
 const atCounter = () => near(54, 13.2, 3.2) && player.group.position.z > 6.3; // in front of Big Al
@@ -1644,6 +1728,7 @@ let guardTime = 0, guardBlend = 0; // his fists stay up for a moment after a pun
 // --- Input ------------------------------------------------------------------
 const keys = new Set();
 window.addEventListener('keydown', (e) => {
+  if (chatOpen) return; // typing to somebody: the keys are words, not controls
   keys.add(e.code);
   if (e.code === 'Space') e.preventDefault(); // stop the page scrolling
   if (!e.repeat) {
@@ -1671,7 +1756,9 @@ window.addEventListener('keydown', (e) => {
       else toast("You don't own a gun yet. Big Al's Guns is across the road from the petrol station.");
     }
   }
-  if (e.code === 'KeyT' && !e.repeat) toggleAutoPole(); // the fishing boat's automatic pole
+  if (e.code === 'KeyT' && !e.repeat) { // talk to whoever is in front of him; out on the fishing boat it works the automatic pole
+    if (talkable) { e.preventDefault(); openChat(talkable); } else toggleAutoPole();
+  }
   if (e.code === 'KeyR' && !e.repeat) { // put the view back to normal
     cam.pitch = 0.18;
     cam.distance = 3.6;
@@ -1832,6 +1919,7 @@ let gameTime = 0;
 // Move the whole game forward by `dt` seconds.
 function step(dt) {
   gameTime += dt;
+  updateTalk(dt);
   const time = gameTime;
 
   const input = {
@@ -2160,6 +2248,7 @@ function step(dt) {
   const boatPrompt = [climbHint, fishPrompt, poleHint].filter(Boolean).join(' · ');
   if (boatPrompt) { usePrompt.textContent = boatPrompt; usePrompt.style.display = 'block'; }
   if (grabbable && !driving && !boating && !shopOpen && !martOpen && !casinoOpen) { usePrompt.textContent = usePrompt.style.display === 'block' ? usePrompt.textContent + '  ·  Hold G to strangle' : 'Hold G to strangle'; usePrompt.style.display = 'block'; }
+  if (talkable && !shopOpen && !martOpen && !casinoOpen && !atmOpen && !boxOpen) { usePrompt.textContent = usePrompt.style.display === 'block' ? usePrompt.textContent + '  ·  Press T to talk' : 'Press T to talk'; usePrompt.style.display = 'block'; }
   const game = casinoSpot();
   if (casinoOpen && casinoOpen !== game) setCasino(null); // walking away from the machine or the table
   if (game && !casinoOpen) {
@@ -2191,6 +2280,11 @@ function step(dt) {
   }
   if (driving || boating) gun.mesh.visible = false;
   updatePolice(dt);
+  // Where he is and which way the camera looks, so that only people who could be seen are worked out and drawn.
+  camera.getWorldDirection(lookWay);
+  const flat = Math.hypot(lookWay.x, lookWay.z);
+  npcs.view = { x: player.group.position.x, z: player.group.position.z, cx: camera.position.x, cz: camera.position.z,
+    fx: flat > 0.25 ? lookWay.x / flat : 0, fz: flat > 0.25 ? lookWay.z / flat : 0 };
   npcs.threat = gun.equipped && !driving && !boating; // shop staff put their hands up
   npcs.grip = grip;
   updateNpcs(npcs, player.group.position, dt, onStrike, {
