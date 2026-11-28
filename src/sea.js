@@ -6,7 +6,7 @@
 // bob further out.
 import * as THREE from 'three';
 import { Reflector } from 'three/addons/objects/Reflector.js';
-import { sea, addObstacle, addFloor, addInterior } from './world.js';
+import { sea, addObstacle, addFloor, addInterior, waterDepthAt, EAST_EDGE } from './world.js';
 import { clearings, daylight } from './grass.js';
 import { block, canvasTexture, speckle, makeMaterials, addPalm } from './house.js';
 import { label } from './store.js';
@@ -367,6 +367,16 @@ export function createSea(scene, shoreX, fog, sunDirection) {
   });
 
   group.traverse((part) => part.layers.enable(1)); // everything on the beach and the water shows in the mirror
+  // Speed boats, moored in the lagoon off Jamaica's beach, by the bar and the hut. Wade out and press F.
+  for (const [bx, bz, colour, turn] of [[2694, 15, 0xd9281e, -0.35], [2706, 17, 0xf4f2ea, 0.3], [2744, 19, 0x1f6fb5, -0.2], [2756, 20, 0xfed100, 0.35]]) {
+    const boat = makeSpeedboat(colour), wake = makeSpray();
+    boat.position.set(bx, WATER, bz);
+    boat.rotation.order = 'YXZ';
+    boat.rotation.y = turn;
+    wake.scale.setScalar(1.8);
+    group.add(boat, wake);
+    skis.push({ group: boat, wake, heading: turn, speed: 0, steer: 0, phase: bx, engine: null, jetSki: true, speedboat: true, top: 46, seat: { back: -0.55, height: 0.5 } });
+  }
   scene.add(group, seaBed);
   return { water, floats, skis, shoreX, boatBox, fishing, guard, pier: { z: pierZ, from: pierFrom, to: pierTo } };
 }
@@ -383,6 +393,33 @@ export function updateSea(seaParts, time) {
 // --- Jet skis --------------------------------------------------------------------------
 
 const SKI_TOP_SPEED = 32; // metres per second, about 70 mph
+
+// A speed boat: a pointed white-decked hull with a coloured side, a raked windscreen, two seats,
+// a wheel, and a big outboard engine on the back. Faces +Z, with its waterline at height 0.
+function makeSpeedboat(colour) {
+  const boat = new THREE.Group();
+  const paint = (color, roughness = 0.35, metalness = 0.2) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
+  const side = paint(colour), deck = paint(0xf4f2ea), black = paint(0x151617, 0.7, 0), chrome = paint(0xdfe2e4, 0.15, 0.9), seat = paint(0xf2e6c0, 0.8, 0);
+  const part = (material, w, h, d, x, y, z, turnY = 0, tiltX = 0) => { const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material); mesh.position.set(x, y, z); mesh.rotation.set(tiltX, turnY, 0); mesh.castShadow = true; boat.add(mesh); return mesh; };
+  part(side, 2.0, 0.75, 4.2, 0, 0.1, -0.7);                       // the hull
+  part(side, 1.42, 0.75, 1.42, 0, 0.1, 1.4, Math.PI / 4);         // ...coming to a point at the bow
+  part(deck, 1.9, 0.06, 1.6, 0, 0.5, 0.7);                        // foredeck
+  part(deck, 1.34, 0.06, 1.34, 0, 0.5, 1.4, Math.PI / 4);
+  part(black, 1.84, 0.05, 2.5, 0, -0.05, -1.4);                   // the floor of the cockpit
+  for (const edge of [-1, 1]) part(deck, 0.14, 0.1, 4.2, edge * 0.94, 0.52, -0.7); // gunwales
+  part(paint(0x16222e, 0.08, 0.7), 1.7, 0.5, 0.05, 0, 0.78, -0.1, 0, -0.5); // windscreen
+  part(chrome, 1.76, 0.04, 0.06, 0, 1.0, -0.22);
+  for (const edge of [-0.48, 0.48]) { part(seat, 0.6, 0.12, 0.6, edge, 0.18, -1.0); part(seat, 0.6, 0.6, 0.12, edge, 0.46, -1.32); } // two seats
+  part(seat, 1.7, 0.14, 0.55, 0, 0.18, -2.3);                     // a bench across the back
+  const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.025, 8, 16), black);
+  wheel.position.set(-0.48, 0.62, -0.42);
+  wheel.rotation.x = -0.5;
+  boat.add(wheel);
+  part(black, 0.42, 0.7, 0.5, 0, 0.55, -3.0);                     // the outboard engine
+  part(black, 0.14, 0.9, 0.16, 0, -0.1, -3.05);
+  part(paint(0xc9ccd0, 0.3, 0.6), 0.44, 0.1, 0.52, 0, 0.93, -3.0);
+  return boat;
+}
 
 // A jet ski. Faces +Z, with its waterline at height 0.
 function makeJetSki(hullColour, trimColour) {
@@ -438,7 +475,7 @@ export function updateJetSkis(seaParts, time, dt, ridden, input) {
   for (const ski of seaParts.skis) {
     const position = ski.group.position;
     if (ski === ridden) {
-      if (input.throttle > 0) ski.speed += 15 * (1 - ski.speed / SKI_TOP_SPEED) * dt;
+      if (input.throttle > 0) ski.speed += 15 * (1 - ski.speed / (ski.top || SKI_TOP_SPEED)) * dt;
       else if (input.throttle < 0) ski.speed -= (ski.speed > 0.5 ? 16 : 4) * dt;
       if (input.brake) ski.speed -= ski.speed * Math.min(1, 3 * dt);
       ski.steer += (input.steer - ski.steer) * Math.min(1, 5 * dt);
@@ -448,12 +485,15 @@ export function updateJetSkis(seaParts, time, dt, ridden, input) {
     }
     ski.speed -= ski.speed * 0.5 * dt; // the water slows it down
     ski.speed = Math.max(ski.speed, -3);
+    const wasX = position.x, wasZ = position.z;
     position.x += Math.sin(ski.heading) * ski.speed * dt;
     position.z += Math.cos(ski.heading) * ski.speed * dt;
+    // Out among the islands: it will not run up a beach.
+    if (position.x > shoreX + 300 && waterDepthAt(position) < 0.6) { position.x = wasX; position.z = wasZ; ski.speed *= 1 - Math.min(1, 6 * dt); }
 
     // Stay on the water: it runs aground on the beach, stops at the edge of the map, and bumps off the pier.
     if (position.x < shoreX + 3) { position.x = shoreX + 3; ski.speed *= 1 - Math.min(1, 5 * dt); }
-    position.x = Math.min(position.x, shoreX + 420);
+    position.x = Math.min(position.x, EAST_EDGE - 20); // (the open sea runs out past Jamaica and Cuba)
     position.z = THREE.MathUtils.clamp(position.z, -1100, 1100);
     if (position.x < pier.to + 1.8 && Math.abs(position.z - pier.z) < 3.0) {
       if (position.x > pier.to + 0.8) position.x = pier.to + 1.8;
@@ -491,6 +531,12 @@ export function seaLanding(seaParts, ski) {
     return new THREE.Vector3(THREE.MathUtils.clamp(position.x, pier.from + 1, pier.to - 1), PIER, pier.z + (position.z < pier.z ? -0.8 : 0.8));
   }
   if (position.x < shoreX + 9) return new THREE.Vector3(shoreX - 1.5, SAND, position.z);
+  if (position.x > shoreX + 300) { // by an island: onto the nearest bit of beach or shallows
+    for (let reach = 2.5; reach <= 9; reach += 1.3) for (let around = 0; around < 10; around++) {
+      const spot = new THREE.Vector3(position.x + Math.cos(around * 0.628) * reach, 0.7, position.z + Math.sin(around * 0.628) * reach);
+      if (waterDepthAt(spot) < 0.6) return spot;
+    }
+  }
   return null;
 }
 

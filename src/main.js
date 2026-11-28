@@ -1604,7 +1604,7 @@ function updateTalk(dt) {
     setTimeout(() => {
       for (let frame = 0; frame < Number(testView.get('sim')); frame++) step(1 / 30);
       const p = player.group.position;
-      console.log(`TEST sim: cam y ${camera.position.y.toFixed(1)} at ${p.x.toFixed(0)},${p.y.toFixed(1)},${p.z.toFixed(0)} trip ${trip ? trip.time.toFixed(0) : 'no'} plane ${driving && truck.plane ? `speed ${truck.speed.toFixed(0)} alt ${truck.group.position.y.toFixed(0)}` : 'no'} liner ${airport.liner.phase} traffic ${traffic.filter((car) => car.active).length} dents ${truck.dents || 0} bites ${bites} swarm ${swarm.toFixed(0)} spray ${sprayed.toFixed(0)} mug ${mug ? mug.phase : "no"} laps ${training.laps} fit ${player.fit} race ${race ? `${race.phase} ${race.metres.toFixed(0)}m` : "no"} gold ${training.gold} J$${Math.round(jmoney)} storm ${storm.toFixed(2)} day ${day} ill ${JSON.stringify(ill)} slow ${player.slow} health ${Math.round(health)} stars ${stars} resisting ${resisting} cash ${money} downed ${downed} trouble ${!!seaTrouble} flag ${flagShown} | ${toastEl.textContent}`);
+      console.log(`TEST sim: cam y ${camera.position.y.toFixed(1)} at ${p.x.toFixed(0)},${p.y.toFixed(1)},${p.z.toFixed(0)} trip ${trip ? trip.time.toFixed(0) : 'no'} plane ${driving && truck.plane ? `speed ${truck.speed.toFixed(0)} alt ${truck.group.position.y.toFixed(0)}` : 'no'} liner ${airport.liner.phase} traffic ${traffic.filter((car) => car.active).length} dents ${truck.dents || 0} bites ${bites} swarm ${swarm.toFixed(0)} spray ${sprayed.toFixed(0)} boat ${boating ? `speed ${boating.speed.toFixed(0)}` : 'no'} mug ${mug ? mug.phase : "no"} laps ${training.laps} fit ${player.fit} race ${race ? `${race.phase} ${race.metres.toFixed(0)}m` : "no"} gold ${training.gold} J$${Math.round(jmoney)} storm ${storm.toFixed(2)} day ${day} ill ${JSON.stringify(ill)} slow ${player.slow} health ${Math.round(health)} stars ${stars} resisting ${resisting} cash ${money} downed ${downed} trouble ${!!seaTrouble} flag ${flagShown} | ${toastEl.textContent}`);
     }, 0);
   }
   if (chatOpen) { // while he is typing, nothing else happens, and they wait to hear it
@@ -3598,7 +3598,7 @@ function step(dt) {
     step.anchored = true;
   }
   if (testView.has('trawl') && !boating && !step.anchored && player.bones) { boating = seaParts.fishing; castOff(seaParts); } // ?trawl starts at the fishing boat's wheel, under way
-  if (testView.has('ski') && !boating && player.bones) boating = seaParts.skis[0]; // ?ski starts on a jet ski at full throttle
+  if (testView.has('ski') && !boating && player.bones) boating = seaParts.skis[Number(testView.get('ski')) || 0]; // ?ski starts on a jet ski at full throttle (?ski=4 for a speed boat)
   if (boating) {
     // He stands in the boat, which carries him (and the camera) along.
     // He sits on the stern bench with a hand on the tiller.
@@ -3791,7 +3791,7 @@ function step(dt) {
   if (tipsy > 0) cam.yaw += Math.sin(time * 0.7) * 0.12 * Math.min(1, tipsy / 5) * dt; // the world drifts about
   if (energy > 0) { energy -= dt; if (energy <= 0) player.boost = 1; }
   if (testView.has('shop') && byAl && !shopOpen) setShop(true); // ?shop opens Big Al's menu straight away
-  usePrompt.textContent = canLand ? (boating.fishing ? 'Press F to leave the wheel' : 'Press F to get out') : byBoat ? (fishingBoatNear(seaParts, player.group.position) ? 'Press F to take the wheel' : jetSkiNear(seaParts, player.group.position) ? 'Press F to ride the jet ski' : 'Press F to take the boat out') : byTruck ? (besideCar.plane ? `Press F to fly the ${besideCar.name}` : besideCar.own ? 'Press F to drive your truck' : besideCar.stolen ? `Press F to drive the ${besideCar.name}` : `Press F to steal the ${besideCar.name}`)
+  usePrompt.textContent = canLand ? (boating.fishing ? 'Press F to leave the wheel' : 'Press F to get out') : byBoat ? (fishingBoatNear(seaParts, player.group.position) ? 'Press F to take the wheel' : jetSkiNear(seaParts, player.group.position) ? (jetSkiNear(seaParts, player.group.position).speedboat ? 'Press F to take the speed boat' : 'Press F to ride the jet ski') : 'Press F to take the boat out') : byTruck ? (besideCar.plane ? `Press F to fly the ${besideCar.name}` : besideCar.own ? 'Press F to drive your truck' : besideCar.stolen ? `Press F to drive the ${besideCar.name}` : `Press F to steal the ${besideCar.name}`)
     : byBed ? (isNight() ? 'Press E to sleep until morning' : 'You can sleep here once it gets dark (6 in the evening)') : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to use the cash machine' : 'Press E to open or close the fridge';
   usePrompt.style.display = ((byTruck && !boating) || byFridge || byBoat || canLand || byCash || byAl || byMart || gymSpot || byBed) && !shopOpen && !martOpen && !atmOpen ? 'block' : 'none';
   const fishPrompt = fishingState?.phase === 'bite' ? 'A BITE! Press E now!'
