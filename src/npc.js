@@ -82,7 +82,8 @@ function recolour(material, degrees) {
   const image = material.map?.image;
   if (!degrees || !image) return material;
   // Whole outfits in one colour: a prisoner's orange overalls, a lifeguard's red kit, and the four people in the vault job.
-  const dyeHue = { prison: 0.07, lifeguard: 0.995, zora: 0.78, spike: 0.34, baron: 0.99, joe: 0.12 }[degrees];
+  const dyeHue = { prison: 0.07, lifeguard: 0.995, zora: 0.78, spike: 0.34, baron: 0.99, joe: 0.12, doctor: 0.55 }[degrees];
+  const whiteCoat = degrees === 'doctor';
   const cacheKey = material.uuid + ':' + degrees; // repainting is slow, so each outfit is only made once
   if (recoloured.has(cacheKey)) return recoloured.get(cacheKey);
   const canvas = document.createElement('canvas');
@@ -97,7 +98,7 @@ function recolour(material, degrees) {
     colour.setRGB(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255).getHSL(hsl);
     const skinOrHair = hsl.h < 0.14 || hsl.h > 0.97;
     if (skinOrHair && hsl.s >= 0.08) continue;
-    if (dyeHue !== undefined) colour.setHSL(dyeHue, 0.95, 0.3 + hsl.l * 0.35);
+    if (dyeHue !== undefined) colour.setHSL(dyeHue, whiteCoat ? 0.06 : 0.95, whiteCoat ? 0.62 + hsl.l * 0.32 : 0.3 + hsl.l * 0.35);
     else if (hsl.s >= 0.08) colour.setHSL((hsl.h + degrees / 360) % 1, hsl.s, hsl.l); // coloured cloth: new colour
     else colour.multiply(dye);                                                   // white or grey cloth: dyed
     d[i] = colour.r * 255; d[i + 1] = colour.g * 255; d[i + 2] = colour.b * 255;
@@ -213,6 +214,17 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
   const loader = new GLTFLoader();
   Promise.all([loadKind(loader, 'woman'), loadKind(loader, 'man')]).then(([woman, man]) => {
     const kinds = { woman, man };
+    // A person sitting on a motorbike: one of the ordinary men or women, leaning forward with hands on the bars.
+    npcs.makeRider = (n) => {
+      const kind = n % 2 ? kinds.woman : kinds.man, model = cloneSkinned(kind.scene);
+      model.traverse((part) => { if (part.isMesh) part.material = reskin(recolour(part.material, CITY_HUES[n % 5]), n % 3 ? 'dark' : 'tan'); });
+      new THREE.AnimationMixer(model).clipAction(kind.clips[0]).play().getMixer().update(0); // start from the way they stand
+      const bend = (name, angle) => { model.updateMatrixWorld(true); const bone = model.getObjectByName(name); if (bone) turnBoneBy(bone, swing.setFromAxisAngle(axis.set(1, 0, 0), angle)); };
+      bend('Spine', 0.42);
+      for (const side of ['Left', 'Right']) { bend(`${side}UpLeg`, -1.75); bend(`${side}Leg`, 1.5); bend(`${side}Arm`, -1.5); bend(`${side}ForeArm`, -0.2); }
+      bend('Head', -0.35);
+      return model;
+    };
 
     npcs.cashiers = [];
     for (const cashierSpot of cashierSpots || []) {
@@ -235,14 +247,14 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
       scene.add(group);
       const mixer = new THREE.AnimationMixer(model);
       mixer.clipAction(base.clips[0]).play(); // standing idle
-      const runAction = cashierSpot.lifeguard ? mixer.clipAction(base.clips[2]) : null; // the lifeguard is the one who has to run
+      const runAction = cashierSpot.lifeguard || cashierSpot.runner ? mixer.clipAction(base.clips[2]) : null; // the lifeguard is the one who has to run
       if (runAction) { runAction.play(); runAction.setEffectiveWeight(0); }
       const bones = ['Neck', 'Head', 'LeftArm', 'RightArm', 'LeftForeArm', 'RightForeArm', 'Spine'].map((name) => model.getObjectByName(name));
       npcs.cashiers.push({ runAction, idleAction: mixer.clipAction(base.clips[0]), name: cashierSpot.name, group, model, mixer, bones, clean: bones.map((bone) => bone.quaternion.clone()), look: 0,
         cashier: true, spot: cashierSpot, home: group.position.clone(), facing: cashierSpot.facing, handsUp: 0, choke: 0, chokeTime: 0, dead: 0, fall: 0,
         meek: !cashierSpot.uniform && !cashierSpot.prisoner && !cashierSpot.special, // shop staff put their hands up at the sight of a gun
         cb: { neck: bones[0], head: bones[1], armL: bones[2], armR: bones[3], foreL: bones[4], foreR: bones[5], spine: bones[6] } });
-      addObstacle(cashierSpot.x - 0.3, cashierSpot.x + 0.3, cashierSpot.z - 0.3, cashierSpot.z + 0.3, group.position.y + 2.1, cashierSpot.y ? group.position.y - 0.3 : undefined);
+      if (!cashierSpot.swimmer && !cashierSpot.runner) addObstacle(cashierSpot.x - 0.3, cashierSpot.x + 0.3, cashierSpot.z - 0.3, cashierSpot.z + 0.3, group.position.y + 2.1, cashierSpot.y ? group.position.y - 0.3 : undefined);
     }
 
     npcs.officers = [];
@@ -516,6 +528,7 @@ const OFFICER_HEALTH = 130, OFFICER_RESPAWN = 45; // tougher than most; a new of
 export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
   const view = npcs.view || { x: playerPosition.x, z: playerPosition.z, cx: playerPosition.x, cz: playerPosition.z, fx: 0, fz: 0 };
   npcs.quiet = (npcs.quiet || 0) - dt; // a pause between passers-by speaking
+  view.stormy = !!npcs.stormy;          // a hurricane: people get off the streets
   view.drawn = 0;
   for (const npc of npcs) if (npc.stream && !npc.away && npc.group.visible) view.drawn++; // how many of the crowd are on screen
   for (const crew of Object.values(npcs.crews || {})) crew.alert = Math.max(0, crew.alert - dt);
@@ -580,6 +593,28 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     cashier.bones.forEach((bone, i) => bone.quaternion.copy(cashier.clean[i])); // undo last frame's head turn
     if (cashier.dead <= 0) cashier.mixer.update(dt);
     cashier.bones.forEach((bone, i) => cashier.clean[i].copy(bone.quaternion));
+    if (cashier.spot?.runner) { // an athlete: the race moves them; here they just run or stand
+      cashier.pace = (cashier.pace || 0) + ((cashier.running ? 1 : 0) - (cashier.pace || 0)) * Math.min(1, 8 * dt);
+      cashier.runAction.setEffectiveWeight(cashier.pace);
+      cashier.idleAction.setEffectiveWeight(1 - cashier.pace);
+      cashier.mixer.update(dt * cashier.pace * 0.5); // (a sprinter's legs go faster than a jogger's)
+      continue;
+    }
+    if (cashier.spot?.swimmer) {
+      // Somebody having a swim: lying in the water doing a front crawl, round and round in a lazy loop.
+      const lap = performance.now() * 0.00016 + cashier.home.x, reach = 5 + (cashier.home.z % 3);
+      const px = cashier.home.x + Math.cos(lap) * reach, pz = cashier.home.z + Math.sin(lap * 0.83) * reach * 0.7;
+      cashier.group.rotation.y = Math.atan2(px - cashier.group.position.x, pz - cashier.group.position.z);
+      cashier.group.position.set(px, -0.14 + Math.sin(performance.now() * 0.002 + cashier.home.x) * 0.03, pz);
+      cashier.model.rotation.x = 1.3;
+      const side = axis.set(1, 0, 0).applyQuaternion(cashier.group.quaternion), stroke = performance.now() * 0.0042 + cashier.home.z;
+      for (const [upper, fore, lag] of [[cashier.cb.armL, cashier.cb.foreL, 0], [cashier.cb.armR, cashier.cb.foreR, Math.PI]]) {
+        turnBoneBy(upper, swing.setFromAxisAngle(side, Math.atan2(Math.sin(stroke + lag), Math.cos(stroke + lag))));
+        turnBoneBy(fore, swing.setFromAxisAngle(side, -0.8 * Math.max(0, Math.sin(stroke + lag - 1.9))));
+      }
+      turnBoneBy(cashier.cb.head, swing.setFromAxisAngle(side, -0.8));
+      continue;
+    }
     // Strangled: he drops behind the counter, and someone new takes over the till after a while.
     if (cashier.dead > 0) {
       cashier.dead -= dt;
@@ -698,7 +733,8 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     // Left behind: once he is a long way off (or well behind the camera), this person is taken away and can turn up ahead instead.
     if (npc.stream && npcs.grip?.victim !== npc && (npc.state === 'idle' || npc.state === 'walk') && !(npc.talkTime > 0)
       && (playerDistance > GONE || (playerDistance > 58 && !npc.group.visible && Math.random() < dt * 0.6)
-        || (playerDistance > 72 && view.drawn > MOST_DRAWN + 2 && Math.random() < dt))) { // (and when too many are on screen, the furthest specks go)
+        || (playerDistance > 72 && view.drawn > MOST_DRAWN + 2 && Math.random() < dt)
+        || (view.stormy && (playerDistance > 22 || !npc.group.visible) && Math.random() < dt * 0.6))) { // (and in a hurricane everybody hurries indoors) // (and when too many are on screen, the furthest specks go)
       if (npc.group.visible) view.drawn--;
       leaveCrowd(npc);
       continue;
@@ -896,6 +932,7 @@ function leaveCrowd(npc) {
 // Bring somebody into the crowd on a pavement near the player, but never where he would see them pop up:
 // only behind the camera, or so far ahead that they are a speck.
 function joinCrowd(npc, view) {
+  if (view.stormy) return; // nobody comes out in a hurricane
   for (let attempt = 0; attempt < 6; attempt++) {
     const lane = view.x > 2300 ? ISLAND_AREA : LANES[LANE_ODDS[(Math.random() * LANE_ODDS.length) | 0]];
     if (lane.area) { // on Jamaica: anywhere on the island, most of them in and around the town and the airstrip
@@ -1019,6 +1056,8 @@ export function replyTo(who, said, friends = []) {
     if (has(text, ['help', 'crime', 'stole', 'robbed'])) return { text: 'Report it at the front desk.' };
     return { text: pick(['Move along, sir.', 'Keep your nose clean.', 'Nothing to see here.', 'Stay out of trouble.']) };
   }
+  if (who.spot?.runner) return { text: pick(['See you on the track.', 'You will be looking at my back.', 'Good luck. You will need it.', 'Gold is mine.']) };
+  if (who.spot?.swimmer) return { text: pick(['Di wata nice today!', 'Come in, mon, it warm!', 'Mind di flag, yuh hear?', 'Lovely day for a swim!']) };
   if (who.spot?.special) return { text: who.spot.say || 'Press E if you have business with me.' };
   const yard = who.lane?.island || who.spot?.skin; // an islander answers the island way
   if (yard) {

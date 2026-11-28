@@ -3,7 +3,7 @@ import { createPlayer, updatePlayer, crouchDrop, knockDown, sitPlayer, SIT_DROP,
 import { PALETTE, createSky, createComposer } from './look.js';
 import { createGrass, updateGrass, daylight } from './grass.js';
 import { addDirt } from './terrain.js';
-import { createHouse, updateHouse, toggleFridge, nearFridge } from './house.js';
+import { createHouse, updateHouse, toggleFridge, nearFridge, swayPalms, nearPalm } from './house.js';
 import { createIguanas, updateIguanas, findIguanaHit, killIguana, collectIguana } from './iguana.js';
 import { createStore, updateStore } from './store.js';
 import { createBeerShop, updateBeerShop } from './beershop.js';
@@ -27,11 +27,11 @@ import { createCars } from './cars.js';
 import { createSeaLife, updateSeaLife } from './sealife.js';
 import { createBank, setVaultDoor, VAULT_PEOPLE, portrait } from './bank.js';
 import { createDogs, updateDogs, findDogHit, dogNear, hurtDog, patDog } from './dogs.js';
-import { createTraffic, updateTraffic } from './traffic.js';
+import { createTraffic, updateTraffic, createIslandTraffic, updateIslandTraffic } from './traffic.js';
 import { createMap, updateMap, toggleMap } from './map.js';
 import { createAirport, updateAirport, updatePlane, resetPlane } from './airport.js';
 import { createMechanic, createBarber, HAIRCUTS, makeHair, makeHat } from './brewst.js';
-import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt, seaBedAt } from './world.js';
+import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt, seaBedAt, terrainAt, wind } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke, emitBloodMist } from './gun.js';
 import { createNpcs, updateNpcs, findNpcHit, hitNpc, provokeNpc, playStrike, findGrab, neckSpot, strangle, CHOKE_TIME, floorNpc, reviveNpc, speeches, speak, findListener, replyTo, debug as npcDebug } from './npc.js';
 
@@ -180,7 +180,7 @@ let bank = saved.bank ?? 0;       // what he has paid in at a cash machine: that
 const owned = new Set(saved.owned || []);
 if (new URLSearchParams(location.search).has('gun')) owned.add('pistol'); // test views start armed
 owned.add('camo'); // his own special rifle: nobody sells it and nobody else has one. Press 7 to carry it.
-const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, bank, jmoney, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests, compDay, job, hair: hairKey, friends })); } catch { /* no storage */ } };
+const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, bank, jmoney, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests, compDay, job, hair: hairKey, friends, ill, runs: runsDone, training })); } catch { /* no storage */ } };
 
 const overlay = (css) => { const el = document.createElement('div'); el.style.cssText = `position:fixed;pointer-events:none;font-family:system-ui,sans-serif;${css}`; document.body.appendChild(el); return el; };
 const moneyEl = overlay('right:18px;top:14px;font-weight:bold;font-size:24px;color:#d8f0c0;background:rgba(30,45,25,0.7);padding:6px 14px;border-radius:8px');
@@ -265,11 +265,13 @@ const BEERS = [
 ];
 const TILLS = { mart: { title: "Sunny's Mart", greeting: 'Anything else?', items: MART }, beer: { title: 'Cold Ones Beer Shop', greeting: 'What are you drinking?', items: BEERS } };
 let till = TILLS.mart; // the shop whose counter he is at
-const bag = Object.assign({ lighter: 0, cigarettes: 0, beer: 0, snacks: 0 }, saved.bag);
+const bag = Object.assign({ lighter: 0, cigarettes: 0, beer: 0, snacks: 0, spray: 0, crate: 0 }, saved.bag);
 const bagEl = overlay('right:18px;top:58px;font-size:15px;color:#f3e9d2;background:rgba(40,30,20,0.65);padding:5px 12px;border-radius:8px');
 function showBag() {
   const parts = [];
+  if (bag.crate) parts.push('CRATE OF CIGARETTES (for Benny)');
   if (bag.knife) parts.push('Knife');
+  if (bag.spray) parts.push(`Bug spray ×${bag.spray}`);
   if (bag.lighter) parts.push('Lighter');
   if (bag.cigarettes) parts.push(`${bag.cigarettes} cigarette${bag.cigarettes > 1 ? 's' : ''}`);
   if (bag.beer) parts.push(`${bag.beer} beer${bag.beer > 1 ? 's' : ''}`);
@@ -795,6 +797,8 @@ function hurtPlayer(amount) {
     const bill = money; // everything in his pockets is gone. What is in the bank is safe.
     money = 0;
     jmoney = 0;
+    Object.assign(ill, { food: 0, dengue: 0, leg: false, arm: false }); // (whoever picked him up patched him up)
+    showIll();
     showMoney();
     health = 100;
     showHealth();
@@ -808,7 +812,7 @@ function hurtPlayer(amount) {
   }, 1300);
 }
 function healOverTime(dt) {
-  if (health >= 100 || downed || gameTime - lastHurtAt < 6) return;
+  if (health >= 100 || downed || gameTime - lastHurtAt < 6 || ill.food > 0 || ill.dengue > 0) return; // (no getting better by himself while he is ill)
   health = Math.min(100, health + 4 * dt);
   showHealth();
 }
@@ -1369,6 +1373,7 @@ function boxingHit(npc) {
   showHealth();
   if (health <= 10) {
     knockDown(player, npc.group.position);
+    if (Math.random() < 0.3) breakBone('arm');
     bout.over = 3.4;
     toast(`You are knocked out! ${bout.fighter.name} wins, and the bookie keeps your ${gs(bout.stake)}.`);
   }
@@ -1479,7 +1484,9 @@ function landBlow(target, damage, shove) {
   if (!target.gang && !inRing(target)) commitCrime();
 }
 function updateMelee(dt, input) {
-  if (seaTrouble || trim) Object.assign(input, { x: 0, z: 0, sprint: false, jump: false, crouch: false, lockFacing: true }); // in trouble in the sea: he can't swim on
+  if (ill.leg) { input.sprint = false; input.jump = false; }                                              // a broken leg: no running, no jumping
+  if (retch > 0) Object.assign(input, { x: 0, z: 0, sprint: false, jump: false, crouch: true });            // doubled over, being sick
+  if (seaTrouble || trim || raceHold) Object.assign(input, { x: 0, z: 0, sprint: false, jump: false, crouch: false, lockFacing: true }); // in trouble in the sea: he can't swim on
   if (testView.has('kick')) input.kick = 1; // ?kick holds the leg out, for checking the pose
   if (kickTime > 0) {
     kickTime -= dt;
@@ -1591,7 +1598,7 @@ function updateTalk(dt) {
     setTimeout(() => {
       for (let frame = 0; frame < Number(testView.get('sim')); frame++) step(1 / 30);
       const p = player.group.position;
-      console.log(`TEST sim: cam y ${camera.position.y.toFixed(1)} at ${p.x.toFixed(0)},${p.y.toFixed(1)},${p.z.toFixed(0)} trip ${trip ? trip.time.toFixed(0) : 'no'} plane ${driving && truck.plane ? `speed ${truck.speed.toFixed(0)} alt ${truck.group.position.y.toFixed(0)}` : 'no'} liner ${airport.liner.phase} traffic ${traffic.filter((car) => car.active).length} dents ${truck.dents || 0} health ${Math.round(health)} stars ${stars} resisting ${resisting} cash ${money} downed ${downed} trouble ${!!seaTrouble} flag ${flagShown} | ${toastEl.textContent}`);
+      console.log(`TEST sim: cam y ${camera.position.y.toFixed(1)} at ${p.x.toFixed(0)},${p.y.toFixed(1)},${p.z.toFixed(0)} trip ${trip ? trip.time.toFixed(0) : 'no'} plane ${driving && truck.plane ? `speed ${truck.speed.toFixed(0)} alt ${truck.group.position.y.toFixed(0)}` : 'no'} liner ${airport.liner.phase} traffic ${traffic.filter((car) => car.active).length} dents ${truck.dents || 0} bites ${bites} swarm ${swarm.toFixed(0)} spray ${sprayed.toFixed(0)} laps ${training.laps} fit ${player.fit} race ${race ? `${race.phase} ${race.metres.toFixed(0)}m` : "no"} gold ${training.gold} J$${Math.round(jmoney)} storm ${storm.toFixed(2)} day ${day} ill ${JSON.stringify(ill)} slow ${player.slow} health ${Math.round(health)} stars ${stars} resisting ${resisting} cash ${money} downed ${downed} trouble ${!!seaTrouble} flag ${flagShown} | ${toastEl.textContent}`);
     }, 0);
   }
   if (chatOpen) { // while he is typing, nothing else happens, and they wait to hear it
@@ -1631,27 +1638,30 @@ const FLAGS = {
 const FLAG_DAYS = ['green', 'yellow', 'green', 'red', 'green', 'yellow', 'green', 'purple', 'green', 'yellow', 'red', 'green', 'green'];
 const RESCUE_CHANCE = 0.05;
 const troubleEl = overlay('display:none;left:50%;top:22%;transform:translateX(-50%);font-weight:bold;font-size:28px;color:#fff3e0;background:rgba(150,25,15,0.85);padding:12px 24px;border-radius:10px;text-align:center');
+let splashWait = 0, splashSide = false;
 let seaTrouble = null, swimTime = 0, flagShown = '', flagToldDay = 0, lifeguard = null;
 function updateBeach(dt) {
   // The flag changes every three hours of the game's day, and is green more often than anything else.
-  const key = FLAGS[testView.get('flag')] ? testView.get('flag') : FLAG_DAYS[(day * 8 + Math.floor(hourNow / 3)) % FLAG_DAYS.length], flag = FLAGS[key];
-  if (flagShown !== key) { flagShown = key; seaParts.guard.flag.color.setHex(flag.colour); }
+  const key = storm > 0.3 ? 'red' : FLAGS[testView.get('flag')] ? testView.get('flag') : // (in a hurricane the red flag flies)
+    FLAG_DAYS[(day * 8 + Math.floor(hourNow / 3)) % FLAG_DAYS.length], flag = FLAGS[key];
+  if (flagShown !== key) { flagShown = key; seaParts.guard.flag.color.setHex(flag.colour); airport.beachFlag.color.setHex(flag.colour); }
   lifeguard ??= (npcs.cashiers || []).find((one) => one.spot?.lifeguard) || null;
   if (lifeguard) lifeguard.flagLine = `${flag.name} today: ${flag.note}.${flag.risk ? ' If you go in anyway, I will do my best. No promises.' : ''}`;
   const here = player.group.position;
-  if (here.x > seaParts.shoreX - 38 && here.x < seaParts.shoreX + 450 && flagToldDay !== key && !driving) { // arriving at the beach, or the flag being changed while he is there
+  const atIsland = here.x > 2400;
+  if (((here.x > seaParts.shoreX - 38 && here.x < seaParts.shoreX + 450) || (atIsland && here.z > -20 && here.x < 2800)) && flagToldDay !== key && !driving) { // arriving at the beach, or the flag being changed while he is there
     flagToldDay = key;
     toast(`${flag.name} on the beach now: ${flag.note}.`);
   }
-  const inSea = !driving && !boating && !downed && jailed <= 0 && here.x > seaParts.shoreX && here.x < seaParts.shoreX + 450 && waterDepthAt(here) > 0.9; // (only off the mainland beach, where the lifeguard is)
+  const inSea = !driving && !boating && !downed && jailed <= 0 && ((here.x > seaParts.shoreX && here.x < seaParts.shoreX + 450) || atIsland) && waterDepthAt(here) > 0.9; // off the mainland beach, or anywhere round Jamaica
   if (!seaTrouble) {
     swimTime = inSea ? swimTime + dt : 0;
     if (inSea && flag.risk && (testView.has('drown') || (swimTime > 3 && Math.random() < flag.risk * dt))) { // it goes wrong
-      seaTrouble = { time: 0, flag };
+      seaTrouble = { time: 0, flag, island: atIsland };
       sfx(key === 'purple' ? 'growl' : 'splash');
-      troubleEl.innerHTML = `${flag.trouble}<div style="font-size:17px;font-weight:normal;margin-top:4px">The lifeguard is coming…</div>`;
+      troubleEl.innerHTML = `${flag.trouble}<div style="font-size:17px;font-weight:normal;margin-top:4px">${atIsland ? 'There is no lifeguard on this beach. Fight for it!' : 'The lifeguard is coming…'}</div>`;
       troubleEl.style.display = 'block';
-      if (lifeguard) speak(lifeguard, 'HOLD ON! I AM COMING!', 4);
+      if (lifeguard && !atIsland) speak(lifeguard, 'HOLD ON! I AM COMING!', 4);
     }
     if (lifeguard?.runTo && Math.hypot(lifeguard.group.position.x - lifeguard.home.x, lifeguard.group.position.z - lifeguard.home.z) < 0.9) { // back on his spot
       lifeguard.runTo = null;
@@ -1664,6 +1674,21 @@ function updateBeach(dt) {
   hurt = Math.max(hurt, 0.35 + 0.25 * Math.sin(seaTrouble.time * 9));
   cam.yaw += Math.sin(seaTrouble.time * 11) * 0.5 * dt;
   if (Math.floor(seaTrouble.time / 0.9) !== Math.floor((seaTrouble.time - dt) / 0.9)) sfx('swim');
+  if (seaTrouble.island) { // nobody is coming: after a few seconds he either fights his way clear, or he does not
+    if (seaTrouble.time < 6) return;
+    troubleEl.style.display = 'none';
+    if (testView.get('rescue') === 'yes' || (testView.get('rescue') !== 'no' && Math.random() < 0.5)) {
+      health = Math.max(15, health - 45);
+      showHealth();
+      toast('You kick and claw your way back to the surface, coughing. That was close. Mind the flag next time.');
+    } else {
+      deathCause = seaTrouble.flag.cause.replace(' before the lifeguard could reach you', '').replace(' before the lifeguard could', '');
+      hurtPlayer(9999);
+    }
+    seaTrouble = null;
+    swimTime = 0;
+    return;
+  }
   if (lifeguard && lifeguard.dead <= 0) lifeguard.runTo = here;
   const reached = lifeguard && lifeguard.dead <= 0 && Math.hypot(lifeguard.group.position.x - here.x, lifeguard.group.position.z - here.z) < 1.6;
   if (!reached && seaTrouble.time < 16) return;
@@ -1747,6 +1772,7 @@ function underwaterLook(dt) {
   murk.visible = under;
   underEl.style.opacity = under ? 1 : 0;
   wasUnder = under;
+  if (!under) { scene.fog.near = 260 - 240 * storm; scene.fog.far = 1500 - 1330 * storm; } // in a hurricane you cannot see far through the rain
 }
 // --- The vault job --------------------------------------------------------------------------------
 // A stranger outside Aqua Tower sends him to Lenny, beside the beer shop. Lenny hands over four
@@ -1926,6 +1952,19 @@ function jackTraffic() {
   vehicles.push(car);
   toast(`You drag the driver out of the ${car.name}!`);
 }
+// On Jamaica: a car or a motorbike that has stopped beside him. He pulls the driver or rider off and it is his.
+function jackIsland() {
+  const here = player.group.position;
+  const index = islandTraffic.findIndex((one) => one.speed < 3.5 && Math.hypot(one.group.position.x - here.x, one.group.position.z - here.z) < 3.2);
+  if (index < 0) return;
+  const [one] = islandTraffic.splice(index, 1);
+  islandTraffic.add(one, here.x, here.z); // another takes its place, coming in from the far end of the road
+  if (one.rider) { one.group.remove(one.rider); one.rider = null; }
+  Object.assign(one, { speed: 0, steer: 0, steerers: one.steerers || [], stolen: false, name: one.bike ? 'motorbike' : 'car', topSpeed: one.bike ? 42 : one.topSpeed || 30, reach: one.bike ? 2.6 : 3.4 });
+  one.group.rotation.set(0, one.heading, 0);
+  vehicles.push(one);
+  toast(one.bike ? 'You shove the rider off the motorbike!' : 'You drag the driver out of the car!');
+}
 // The car that could be mended right now: the one he is driving (or standing beside), outside the garage.
 function mechanicJob() {
   if (boating || !near(garage.bay.x, garage.bay.z, 9)) return null;
@@ -1965,6 +2004,7 @@ function updateRoads(dt) {
       if (car.speed > 3.5 && dx * car.dir > 0 && player.downTime < 0 && !downed) {
         if (health - car.speed * 2.5 <= 0) deathCause = `You were run over by a ${car.name}.`;
         knockDown(player, car.group.position);
+        if (car.speed > 6) breakBone('leg');
         hurtPlayer(Math.round(car.speed * 2.5));
         sfx('crash');
         car.stun = 3;
@@ -2020,6 +2060,7 @@ function updateRoads(dt) {
 }
 function roadPrompts() {
   if (trip) { usePrompt.textContent = trip.tour ? 'Sightseeing over Miami. Sit back and look out of the window.' : `Flying to ${trip.to.name}. Sit back.`; usePrompt.style.display = 'block'; return; }
+  if (atDoctor() && !chatOpen) { const fee = doctorBill(), doc = atDoctor(); usePrompt.textContent = fee ? `Press E to be treated by ${doc.name} (${doc.jm ? jd(fee * JM_RATE) : gs(fee)})` : `Press E for a check-up with ${doc.name}`; usePrompt.style.display = 'block'; return; }
   if (fxOpen && !islandAtm()) setFx(false);
   if (islandAtm() && !fxOpen) { usePrompt.textContent = 'Press E to use the cash machine (it changes money)'; usePrompt.style.display = 'block'; return; }
   if (atAltar() && !chatOpen) { usePrompt.textContent = 'Press E to kneel at the altar for a quiet moment'; usePrompt.style.display = 'block'; return; }
@@ -2041,6 +2082,7 @@ function roadPrompts() {
 const gameMap = createMap();
 // Miami Airport, out on the grass behind the far-side towers, with two planes to fly.
 const airport = createAirport(scene);
+const islandTraffic = createIslandTraffic(scene, renderer, airport.islandRoad); // cars and motorbikes on Jamaica's road
 
 // --- Plane tickets ---------------------------------------------------------------------------------
 // The check-in desk at Miami Airport, and the ticket huts on Jamaica and at the Palm Ave airfield,
@@ -2073,6 +2115,7 @@ function setTickets(open) {
 function ticketKey(code) {
   const from = ticketDesk(), choice = from && ticketChoices(from)[['Digit1', 'Digit2', 'Digit3'].indexOf(code)];
   if (!choice) return;
+  if (storm > 0.1 || (stormDay() && hourNow > STORM_FROM - 0.5 && hourNow < STORM_TO)) return sfx('error'), toast('All flights are cancelled until the hurricane has passed.');
   if (money < choice.price) return sfx('error'), toast(`That ticket is G$ ${choice.price}. You only have G$ ${money} on you.`);
   money -= choice.price;
   showMoney();
@@ -2128,6 +2171,7 @@ function flyTrip(dt) {
     cam.yaw = to.facing + Math.PI;
     fadeEl.style.opacity = 0;
     toast(trip.tour ? 'Back on the ground at Miami Airport. Thank you for flying Gator Air.' : `Welcome to ${to.name}. ${to.key === 'miami' ? '' : 'The ticket hut sells flights back.'}`);
+    if (!trip.tour) customsCheck(to);
     trip = null;
   });
 }
@@ -2179,13 +2223,13 @@ function fxKey(code) {
   showMoney(); persist(); drawFx();
 }
 // The island's counters: what each sells, in Jamaican dollars. Food and coffee are eaten on the spot.
-const heal = (amount, words) => () => { health = Math.min(100, health + amount); showHealth(); sfx('eat'); toast(words); };
+const heal = (amount, words) => () => { health = Math.min(100, health + amount); showHealth(); sfx('eat'); toast(words); riskyFood(); };
 Object.assign(TILLS, {
   grocery: { title: "Miss Lou's Grocery", greeting: 'Wah yuh need, darlin?', jm: true, items: [
     { key: 'beer', name: 'Island lager', price: 450, amount: 1, blurb: 'A cold bottle. Press 5 to drink it' },
     { key: 'snacks', name: 'Plantain chips', price: 300, amount: 1, blurb: 'Press 6 to eat them. Run faster for 30 seconds' },
     { name: 'Beef patty', price: 400, blurb: 'Hot from the oven. Eaten on the spot: +25 health', use: heal(25, 'A hot beef patty. That is better.') },
-    { key: 'cigarettes', name: 'Pack of cigarettes', price: 1800, amount: 20, blurb: '20 in a pack. Press 4 to smoke one' },
+    { key: 'spray', name: 'Can of bug spray', price: 500, amount: 3, blurb: 'Three sprays in a can. Press B: no mosquitoes for two minutes' },
   ] },
   coffee: { title: 'Blue Mountain Coffee', greeting: 'Best coffee inna di world. Yuh want a cup?', jm: true, items: [
     { name: 'Cup of Blue Mountain coffee', price: 350, blurb: 'Drunk on the spot: run faster for a whole minute', use: () => { energy = 60; player.boost = 1.35; sfx('drink'); toast('Strong, sweet and black. You could run up the mountain.'); } },
@@ -2253,6 +2297,481 @@ function pray() {
   toast('You kneel by the altar for a quiet moment. You get up feeling whole again. (Full health, once a day.)');
 }
 
+// --- Sickness and injury ----------------------------------------------------------------------------------
+// Food poisoning: now and then, from food bought on the island. It passes by the next day.
+// Dengue fever: mosquitoes bite on Jamaica, and one bite in sixty carries it. It does not pass by itself.
+// Broken bones: a leg from being run over, an arm from being punched to the ground. They do not mend by themselves.
+// A doctor cures all of them: Dr Rivera in Miami General Hospital, or Dr Campbell at the clinic in Kingston.
+const ill = Object.assign({ food: 0, dengue: 0, leg: false, arm: false }, saved.ill);
+const DENGUE_ODDS = 1 / 60;
+let bites = 0, biteWait = 6, retch = 0, retchWait = 14, illDay = 0, illTested = false;
+let swarm = 0, nextSwarm = 20, swarmFrom = null, sprayed = 0; // seconds a swarm has left with him; seconds until the next; and seconds of bug spray left
+const sprayEl = overlay('display:none;right:18px;top:146px;font-size:13px;font-weight:bold;color:#e6f6e0;background:rgba(30,80,40,0.82);padding:4px 10px;border-radius:8px');
+// B: a squirt of bug spray. No mosquitoes for two minutes.
+function useSpray() {
+  if (!(bag.spray > 0)) return toast("You have no bug spray. Miss Lou's Grocery in Kingston sells it.");
+  if (sprayed > 60) return toast('You are still covered in the stuff.');
+  bag.spray--;
+  sprayed = 120;
+  swarm = 0;
+  sfx('spray');
+  showBag(); persist();
+  toast(`Psssht. You stink of citronella, and the mosquitoes want nothing to do with you for two minutes. (${bag.spray} spray${bag.spray === 1 ? '' : 's'} left.)`);
+}
+const illEl = overlay('display:none;right:18px;top:92px;font-size:14px;font-weight:bold;color:#fff3e0;background:rgba(120,30,20,0.82);padding:5px 12px;border-radius:8px;text-align:right');
+const sickEl = overlay('inset:0;opacity:0;transition:opacity 0.6s');
+const anythingWrong = () => ill.food > 0 || ill.dengue > 0 || ill.leg || ill.arm;
+function showIll() {
+  const list = [];
+  if (ill.food > 0) list.push('Food poisoning');
+  if (ill.dengue > 0) list.push('Dengue fever');
+  if (ill.leg) list.push('Broken leg');
+  if (ill.arm) list.push('Broken arm');
+  illEl.style.display = list.length ? 'block' : 'none';
+  illEl.innerHTML = list.join(' · ') + (list.length ? '<br><small style="font-weight:normal;opacity:0.85">See a doctor (Miami hospital or Kingston clinic)</small>' : '');
+}
+// Something he ate may have been off. It shows itself a little later.
+function riskyFood() {
+  if (ill.food > 0 || Math.random() >= 0.08) return;
+  setTimeout(() => {
+    ill.food = 240;
+    showIll(); persist();
+    toast('Your stomach turns over. Something you ate was off: you have food poisoning.');
+  }, 14000);
+}
+function breakBone(which) {
+  if (ill[which] || downed) return;
+  ill[which] = true;
+  sfx('crash');
+  showIll(); persist();
+  toast(which === 'leg' ? 'CRACK. Your leg is broken: you can only limp, and you cannot run or jump. See a doctor.' : 'CRACK. Your arm is broken: your punches are weak. See a doctor.');
+}
+// A cloud of mosquitoes that hangs round him on the island.
+const midges = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(24), 3)), new THREE.PointsMaterial({ color: 0x111111, size: 0.035 }));
+midges.frustumCulled = false;
+midges.visible = false;
+scene.add(midges);
+function mosquitoBite() {
+  bites++;
+  sfx('mosquito');
+  hurt = Math.max(hurt, 0.12);
+  if (bites % 6 === 1) toast(bites === 1 ? 'A mosquito bites you. A swarm has found you: run, go indoors, or use bug spray (B).' : `Slap. That is ${bites} mosquito bites.`);
+  if (!ill.dengue && Math.random() < DENGUE_ODDS) {
+    ill.dengue = 1;
+    showIll(); persist();
+    toast('You are shivering in the heat and every joint aches. That last mosquito gave you dengue fever. Only a doctor can help.');
+  }
+}
+function updateIllness(dt) {
+  if (testView.has('spray') && !illTested) { bag.spray = 3; useSpray(); }
+  if (testView.has('ill') && !illTested) { illTested = true; for (const what of testView.get('ill').split(',')) ill[what] = what === 'food' ? 240 : what === 'dengue' ? 1 : true; showIll(); }
+  if (testView.has('bites') && !updateIllness.bitten) { updateIllness.bitten = true; let caught = 0; for (let i = 0; i < Number(testView.get('bites')); i++) { ill.dengue = 0; mosquitoBite(); caught += ill.dengue; } console.log(`TEST bites: ${bites} bites gave dengue ${caught} times`); }
+  const here = player.group.position, onFoot = !driving && !boating && !trip;
+  // Mosquitoes: on Jamaica, out of doors. More of them after dark.
+  // They do not follow him about all day. Every so often a swarm finds him, hangs round for a
+  // quarter of a minute or so, biting, and then loses interest. Running shakes them off sooner,
+  // going indoors or into the water loses them at once, and bug spray keeps them away altogether.
+  const outside = onFoot && storm < 0.3 && here.x > 2500 && jailed <= 0 && !downed && ceilingAt(here) === Infinity && waterDepthAt(here) <= 0;
+  const pace = swarmFrom ? Math.hypot(here.x - swarmFrom.x, here.z - swarmFrom.z) / Math.max(dt, 1e-4) : 0;
+  swarmFrom = { x: here.x, z: here.z };
+  sprayed = Math.max(0, sprayed - dt);
+  sprayEl.style.display = sprayed > 0 ? 'block' : 'none';
+  if (sprayed > 0) sprayEl.textContent = `Bug spray: ${Math.floor(sprayed / 60)}:${String(Math.floor(sprayed % 60)).padStart(2, '0')}`;
+  if (!outside || sprayed > 0) swarm = 0;
+  else if (swarm > 0) {
+    swarm -= dt * (pace > 5 ? 3 : 1);
+    if (swarm <= 0) nextSwarm = 25 + Math.random() * 45;
+  } else {
+    nextSwarm -= dt * (isNight() ? 2 : 1);
+    if (nextSwarm <= 0) { swarm = 9 + Math.random() * 11; biteWait = 1.5 + Math.random() * 2; }
+  }
+  const bitten = swarm > 0;
+  midges.visible = bitten;
+  if (bitten) {
+    const spots = midges.geometry.attributes.position;
+    for (let i = 0; i < 8; i++) spots.setXYZ(i, here.x + Math.sin(gameTime * (2.1 + i * 0.37) + i) * 0.55, here.y + 1.5 + Math.sin(gameTime * (3.3 + i * 0.5) + i * 2) * 0.3, here.z + Math.cos(gameTime * (1.7 + i * 0.41) + i * 3) * 0.55);
+    spots.needsUpdate = true;
+    biteWait -= dt;
+    if (biteWait <= 0) { biteWait = 3 + Math.random() * 4; mosquitoBite(); }
+  }
+  // A new day sees off food poisoning.
+  if (illDay !== day) { if (illDay && ill.food > 0) { ill.food = 0; toast('You wake up with your stomach settled. The food poisoning has passed.'); showIll(); } illDay = day; }
+  let slow = 1, tint = '';
+  if (ill.food > 0) {
+    ill.food -= dt;
+    slow *= 0.75;
+    if (health > 20) { health -= 0.5 * dt; showHealth(); }
+    retchWait -= dt;
+    if (retchWait <= 0 && onFoot) { retchWait = 12 + Math.random() * 10; retch = 1.4; sfx('retch'); }
+    tint = 'rgba(70,110,30,0.2)';
+    if (ill.food <= 0) { ill.food = 0; showIll(); persist(); toast('Your stomach finally settles. The food poisoning has passed.'); }
+  }
+  if (ill.dengue > 0) {
+    slow *= 0.7;
+    if (health > 30) { health -= 0.35 * dt; showHealth(); }
+    cam.yaw += Math.sin(gameTime * 31) * 0.012 * dt * 60 * 0.12; // the shivers
+    tint = `rgba(190,110,20,${(0.14 + 0.1 * Math.sin(gameTime * 1.3)).toFixed(3)})`;
+  }
+  if (ill.leg) slow *= 0.5;
+  retch = Math.max(0, retch - dt);
+  player.slow = slow;
+  sickEl.style.background = tint || 'transparent';
+  sickEl.style.opacity = tint ? 1 : 0;
+}
+// --- The doctors ---
+const DOCTORS = [
+  { x: 500, z: 12, name: 'Dr Rivera', place: 'Miami General Hospital' },
+  { x: airport.doctor.x, z: airport.doctor.z, name: 'Dr Campbell', place: 'Kingston Clinic', jm: true },
+];
+const FEES = { food: 30, dengue: 120, leg: 80, arm: 80 }; // in Gator Bucks; the clinic charges the same in Jamaican dollars
+const atDoctor = () => (driving || boating || trip ? null : DOCTORS.find((one) => near(one.x, one.z, 2.6) && Math.abs(player.group.position.y - (one.jm ? 0.68 : 0.15)) < 1.5) || null);
+function doctorBill() {
+  let bill = 0;
+  if (ill.food > 0) bill += FEES.food;
+  if (ill.dengue > 0) bill += FEES.dengue;
+  if (ill.leg) bill += FEES.leg;
+  if (ill.arm) bill += FEES.arm;
+  if (!bill && health < 100) bill = 10; // just patching him up
+  return bill;
+}
+function visitDoctor() {
+  const doctor = atDoctor(), bill = doctorBill(), price = doctor.jm ? bill * JM_RATE : bill, cost = doctor.jm ? jd(price) : gs(price);
+  if (!bill) return toast(`${doctor.name} looks you over. "Fit as a fiddle. Nothing wrong with you at all."`);
+  if ((doctor.jm ? jmoney : money) < price) return sfx('error'), toast(`${doctor.name}: "That will be ${cost}." You do not have it${doctor.jm ? ' in Jamaican dollars. The cash machine on Main Street changes money' : ''}.`);
+  if (doctor.jm) jmoney -= price; else money -= price;
+  const done = [];
+  if (ill.food > 0) done.push('medicine for your stomach');
+  if (ill.dengue > 0) done.push('fluids and rest for the dengue');
+  if (ill.leg) done.push('your leg set in plaster');
+  if (ill.arm) done.push('your arm set in plaster');
+  if (!done.length) done.push('a few stitches and a plaster');
+  Object.assign(ill, { food: 0, dengue: 0, leg: false, arm: false });
+  health = 100;
+  fadeEl.style.opacity = 1;
+  setTimeout(() => (fadeEl.style.opacity = 0), 900);
+  sfx('levelup');
+  showHealth(); showMoney(); showIll(); persist();
+  toast(`${doctor.name} treats you: ${done.join(', ')}. That is ${cost}. You walk out good as new.`);
+}
+
+// --- The cigarette run -------------------------------------------------------------------------------------
+// Mr Biggs, by the airstrip on Jamaica, hands over a crate of cigarettes. Benny, beside the Cold Ones
+// beer shop in Miami, pays G$ 500 for it. In between is the border: the customs officer at Miami
+// Airport searches some of the passengers who come off the plane. (The little airfield at Palm Ave
+// has no customs at all, but it is a long way from Miami.)
+const RUN_PAY = 500, SEARCH_ODDS = 0.4;
+const BIGGS = { x: 2844, z: -112, facing: 0, name: 'Mr Biggs', skin: 'dark', wear: 'cap', special: true, dye: 'baron', say: 'Press E if yuh want fi mek some real money.' };
+const BENNY = { x: 616.2, z: 40.5, facing: Math.PI, name: 'Benny', wear: 'cap', special: true, dye: 'spike', say: 'You got something for me? Press E.' };
+const CUSTOMS = { x: 419.5, z: 101.2, facing: 0, name: 'Customs Officer Diaz', uniform: true, special: true, say: 'Anything to declare?' };
+let runsDone = saved.runs ?? 0;
+function runSpot() {
+  if (driving || boating || trip) return null;
+  if (near(BIGGS.x, BIGGS.z, 2.4) && player.group.position.x > 2500) return 'biggs';
+  if (near(BENNY.x, BENNY.z, 2.4) && player.group.position.y < 2) return 'benny';
+  return null;
+}
+function runUse() {
+  if (runSpot() === 'biggs') {
+    if (bag.crate) return sayAs(BIGGS, 'Yuh still have di crate! Benny, by di beer shop pon Brew Street inna Miami. Go!');
+    bag.crate = 1;
+    sfx('pickup');
+    showBag(); persist();
+    return sayAs(BIGGS, `Tek dis crate a cigarette to Benny inna Miami. Him stand by di beer shop pon Brew Street, an him pay ${gs(RUN_PAY)}. Mind di customs man a di airport: if him search yuh, it done. Di likkle airfield a Palm Ave nuh have no customs.`);
+  }
+  if (!bag.crate) return sayAs(BENNY, 'I buy cigarettes off the boat from Jamaica. Mr Biggs, by the airstrip over there, has them. Bring me a crate.');
+  bag.crate = 0;
+  money += RUN_PAY;
+  runsDone++;
+  sfx('coin');
+  sfx('levelup');
+  showMoney(); showBag(); persist();
+  sayAs(BENNY, `Beautiful. No tax stamps on a single pack. Here is your ${gs(RUN_PAY)}. Come back with more.`);
+}
+// Coming off the plane at Miami Airport with the crate.
+function customsCheck(to) {
+  if (to.key !== 'miami' || !bag.crate) return;
+  if ((Math.random() < SEARCH_ODDS || testView.has('unlucky')) && !testView.has('lucky')) {
+    bag.crate = 0;
+    showBag(); persist();
+    commitCrime(2);
+    sfx('megaphone');
+    sayAs(CUSTOMS, 'Step this way, sir. What is in the crate? ...Smuggling. You are under arrest!');
+    setTimeout(() => toast('Customs found the crate and took it. You are wanted: run for it, or stand still and be arrested.'), 4200);
+  } else {
+    setTimeout(() => toast('You walk past the customs officer with the crate under your arm, whistling. He waves you through. Benny is by the beer shop on Brew St (see the map).'), 600);
+  }
+}
+// Coconuts: any palm tree will give him one.
+let coconutAt = -99;
+const coconutPalm = () => !driving && !boating && !trip && jailed <= 0 && (nearPalm(player.group.position, 2.3) || (player.group.position.x > 2500 && airport.junglePalms.some(([x, z]) => near(x, z, 2.3))));
+function eatCoconut() {
+  if (gameTime - coconutAt < 15) return toast('You are still full of the last coconut. Give it a moment.');
+  coconutAt = gameTime;
+  sfx('land');
+  setTimeout(() => sfx('eat'), 700);
+  health = Math.min(100, health + 12);
+  showHealth();
+  toast('You shake the palm and a coconut thumps down. You crack it on a stone, drink the water and eat the flesh. +12 health.');
+}
+function updateSmuggle() {
+  // Jamaica's traffic stops for him, and for anybody else in the road.
+  const onIsland = player.group.position.x > 2300;
+  const inRoad = onIsland && !driving ? [{ x: player.group.position.x, z: player.group.position.z }] : [];
+  if (onIsland) for (const one of npcs) if (!one.away && one.state !== 'dead') inRoad.push({ x: one.group.position.x, z: one.group.position.z });
+  updateIslandTraffic(islandTraffic, Math.min(0.05, 1 / 30), inRoad, onIsland);
+  islandTraffic.forEach((one, i) => {
+    if (one.bike && !one.rider && npcs.makeRider) { // somebody to ride it, once the people have loaded
+      one.rider = npcs.makeRider(i);
+      one.rider.position.set(0, -0.17, -0.2);
+      one.group.add(one.rider);
+    }
+    // Anything still moving when it reaches him knocks him flying.
+    const hx = player.group.position.x - one.group.position.x, hz = player.group.position.z - one.group.position.z;
+    if (onIsland && !driving && !boating && !downed && player.downTime < 0 && one.speed > 3.5 && Math.hypot(hx, hz) < (one.bike ? 1.15 : 1.9) && Math.abs(player.group.position.y - one.group.position.y) < 1.5) {
+      const what = one.bike ? 'motorbike' : 'car', blow = Math.round(one.speed * (one.bike ? 2 : 2.6));
+      if (health - blow <= 0) deathCause = `You were run over by a ${what}.`;
+      knockDown(player, one.group.position);
+      if (one.speed > 6) breakBone('leg');
+      sfx('crash');
+      toast(`A ${what} hits you!`);
+      hurtPlayer(blow);
+      one.stun = 2.5;
+      one.speed = 0;
+    }
+  });
+  if (testView.has('rob') && !updateSmuggle.robbed && player.bones && islandTraffic[1]?.rider) { updateSmuggle.robbed = true; const bike = islandTraffic[1]; bike.speed = 0; player.group.position.set(bike.group.position.x + 1.5, 0.7, bike.group.position.z); toggleDriving(); console.log(`TEST rob: driving ${driving} ${truck.name} bike ${!!truck.bike} wanted ${wanted > 0} on the road ${islandTraffic.length}, bikes ${islandTraffic.filter((v) => v.bike).length}`); } // ?rob takes a motorbike
+  if (testView.has('hit') && !updateSmuggle.hit && player.bones && islandTraffic[1]?.rider && gameTime > 1) { updateSmuggle.hit = true; const bike = islandTraffic[1]; bike.speed = 12; player.group.position.set(bike.group.position.x + 0.3, 0.7, bike.group.position.z + 0.3); } // ?hit puts him under one
+  const stopped = onIsland && !driving && !boating ? islandTraffic.find((one) => one.speed < 3.5 && near(one.group.position.x, one.group.position.z, 3.2)) : null;
+  if (stopped && !chatOpen) { usePrompt.textContent = stopped.bike ? 'Press F to shove the rider off and take the motorbike' : 'Press F to pull the driver out and take the car'; usePrompt.style.display = 'block'; }
+  if (coconutPalm() && !chatOpen && usePrompt.style.display !== 'block') { usePrompt.textContent = 'Press E to knock down a coconut and eat it'; usePrompt.style.display = 'block'; }
+  if (testView.has('nut') && !updateSmuggle.nut && player.bones) { updateSmuggle.nut = true; const [px, pz] = airport.junglePalms[0]; player.group.position.set(px + 1.2, 2, pz); health = 50; console.log(`TEST nut: by a palm ${coconutPalm()}`); useKey(); console.log(`TEST nut: health ${health} | ${toastEl.textContent}`); } // ?nut stands him by a palm and eats one
+  if (testView.has('crate') && !updateSmuggle.set) { updateSmuggle.set = true; bag.crate = 1; showBag(); }
+  if (testView.has('use') && !updateSmuggle.used && player.bones && npcs.cashiers?.length) { updateSmuggle.used = true; useKey(); console.log(`TEST use: cash ${money} crate ${bag.crate} wanted ${wanted > 0} | ${toastEl.textContent}`); }
+  if (bag.crate && (jailed > 0 || downed)) { // locked up, or dead: the crate is gone
+    bag.crate = 0;
+    showBag(); persist();
+    setTimeout(() => toast('The crate of cigarettes is gone.'), 5000);
+  }
+  const spot = runSpot();
+  if (spot && !chatOpen && usePrompt.style.display !== 'block') {
+    usePrompt.textContent = spot === 'biggs' ? 'Press E to talk to Mr Biggs' : bag.crate ? `Press E to sell Benny the crate (${gs(RUN_PAY)})` : 'Press E to talk to Benny';
+    usePrompt.style.display = 'block';
+  }
+}
+
+// --- Hurricanes ---------------------------------------------------------------------------------------------
+// Every tenth day a hurricane comes through, from 11 in the morning until 2 in the afternoon. His phone
+// warns him the day before and again that morning. While it blows: driving rain, a dark sky, thunder
+// and lightning, a wind that shoves him about, things flying through the air, a deadly sea, and no
+// flights. Indoors he is safe.
+const STORM_FROM = 11, STORM_TO = 14;
+let storm = 0, stormClock = 0, debrisWait = 8, thunderWait = 5, gustWait = 0, stormTold = '', stormTested = false;
+const stormDay = () => day % 10 === 0;
+const stormEl = overlay('inset:0;background:rgba(34,42,54,1);opacity:0');
+const flashEl = overlay('inset:0;background:#f4f8ff;opacity:0');
+const stormBanner = overlay('display:none;left:50%;top:60px;transform:translateX(-50%);font-weight:bold;font-size:17px;color:#fff3e0;background:rgba(150,25,15,0.85);padding:6px 16px;border-radius:8px');
+const DROPS = 1500, rainSpots = new Float32Array(DROPS * 6), rainSeed = Array.from({ length: DROPS }, () => [Math.random() * 44 - 22, Math.random() * 22, Math.random() * 44 - 22]);
+const rain = new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(rainSpots, 3)), new THREE.LineBasicMaterial({ color: 0xcfd8e0, transparent: true, opacity: 0.5, fog: false }));
+rain.frustumCulled = false;
+rain.visible = false;
+scene.add(rain);
+// What the phone says about the weather.
+function weatherLine() {
+  const left = (10 - day % 10) % 10, box = (text, bad) => `<div style="margin-top:8px;padding:7px 8px;border-radius:10px;font-size:12.5px;${bad ? 'background:#7a1a12;color:#fff3e0;font-weight:bold' : 'background:#1b1f27;color:#cfe6f2'}">${text}</div>`;
+  if (storm > 0.05) return box('⚠ HURRICANE NOW. Stay indoors. All flights cancelled.', true);
+  if (stormDay() && hourNow < STORM_FROM) return box(`⚠ HURRICANE WARNING: it arrives TODAY at ${STORM_FROM}:00. Get indoors and stay there.`, true);
+  if (left === 1) return box(`⚠ HURRICANE WARNING: one arrives TOMORROW at ${STORM_FROM}:00.`, true);
+  return box(`Weather: fine. Next hurricane expected in ${left || 10} day${(left || 10) > 1 ? 's' : ''}.`, false);
+}
+function updateStorm(dt) {
+  if (testView.has('day') && !stormTested) { stormTested = true; day = Number(testView.get('day')); }
+  // How hard it is blowing: it builds over half an hour of the game's day, and dies away the same.
+  const rise = Math.min(1, Math.max(0, (hourNow - STORM_FROM) / 0.5)), fall = Math.min(1, Math.max(0, (STORM_TO - hourNow) / 0.5));
+  const want = testView.has('storm') ? 1 : stormDay() ? Math.min(rise, fall) : 0;
+  storm += (want - storm) * Math.min(1, 1.5 * dt);
+  if (storm < 0.002) storm = 0;
+  // The phone buzzes with a warning the day before, and again on the morning itself.
+  const told = stormDay() && hourNow < STORM_FROM ? `${day}-today` : (10 - day % 10) % 10 === 1 ? `${day}-tomorrow` : '';
+  if (told && told !== stormTold) {
+    stormTold = told;
+    sfx('error');
+    toast(told.endsWith('today') ? `Your phone buzzes. HURRICANE WARNING: it hits at ${STORM_FROM}:00 today. Get indoors before then. (P for your phone.)` : `Your phone buzzes. HURRICANE WARNING: one arrives tomorrow at ${STORM_FROM}:00. (P for your phone.)`);
+    if (phoneOpen) drawPhone();
+  }
+  npcs.stormy = storm > 0.4;
+  wind.strength.value = storm;       // the palm trees bend with it
+  wind.time.value = stormClock;
+  swayPalms(storm, stormClock, player.group.position);
+  stormEl.style.opacity = 0.5 * storm;
+  flashEl.style.opacity = Math.max(0, Number(flashEl.style.opacity) - dt * 5);
+  const here = player.group.position, indoors = ceilingAt(here) !== Infinity, under = camera.position.y < 0.17 && here.x > seaParts.shoreX;
+  stormBanner.style.display = storm > 0.3 ? 'block' : 'none';
+  stormBanner.textContent = indoors ? 'HURRICANE · you are safe indoors' : 'HURRICANE · GET INDOORS';
+  rain.visible = storm > 0.02 && !indoors && !under;
+  if (storm <= 0) return;
+  stormClock += dt;
+  if (rain.visible) { // sheets of rain, driven sideways, all round the camera
+    rain.material.opacity = 0.55 * storm;
+    const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
+    for (let i = 0; i < DROPS; i++) {
+      const [sx, sy, sz] = rainSeed[i], y = ((sy - stormClock * 30) % 22 + 22) % 22, slant = (22 - y) * 0.45, n = i * 6;
+      rainSpots[n] = cx + sx - slant; rainSpots[n + 1] = cy - 8 + y; rainSpots[n + 2] = cz + sz + slant * 0.5;
+      rainSpots[n + 3] = rainSpots[n] + 0.45; rainSpots[n + 4] = rainSpots[n + 1] + 1.0; rainSpots[n + 5] = rainSpots[n + 2] - 0.22;
+    }
+    rain.geometry.attributes.position.needsUpdate = true;
+  }
+  gustWait -= dt;
+  if (gustWait <= 0) { gustWait = 1.1; sfx('gust'); }
+  thunderWait -= dt;
+  if (thunderWait <= 0 && storm > 0.5) { thunderWait = 5 + Math.random() * 11; flashEl.style.opacity = indoors ? 0.25 : 0.7; setTimeout(() => sfx('thunder'), 500 + Math.random() * 900); }
+  if (indoors || driving || trip || jailed > 0 || downed) return;
+  // Out in it: the wind shoves him along, and now and then something flying hits him.
+  const gust = storm * (0.55 + 0.45 * Math.sin(stormClock * 1.7) * Math.sin(stormClock * 0.6));
+  if (!boating) { here.x -= 2.0 * gust * dt; here.z += 1.0 * gust * dt; }
+  cam.yaw += Math.sin(stormClock * 7) * 0.06 * storm * dt;
+  debrisWait -= dt * storm;
+  if (debrisWait <= 0) {
+    debrisWait = 7 + Math.random() * 9;
+    if (Math.random() < 0.6) {
+      const what = ['a sheet of roofing zinc', 'a flying branch', 'a coconut', 'somebody\'s garden chair', 'a road sign'][Math.floor(Math.random() * 5)];
+      if (health <= 12) deathCause = `You were killed by ${what} in the hurricane.`;
+      sfx('crash');
+      toast(`WHACK. You are hit by ${what}. Get indoors!`);
+      hurtPlayer(12);
+    }
+  }
+}
+
+// --- The running track, and the Olympics ---------------------------------------------------------------
+// Every lap he runs round the track on Jamaica makes him one per cent faster, for good. When he is
+// fast enough, Coach Miller enters him in the Olympic 200 metres against five others.
+const oval = airport.track, LAP = 200, MOST_LAPS = 80;
+const training = Object.assign({ laps: 0, gold: false }, saved.training);
+let lapMetres = 0, lastSpot = null, race = null;
+const trackEl = overlay('display:none;left:50%;top:60px;transform:translateX(-50%);font-weight:bold;font-size:16px;color:#16181c;background:rgba(254,209,0,0.92);padding:6px 16px;border-radius:8px;text-align:center');
+// Where somebody is on the track: how many metres round from the start line, and how far out from the inside edge (null if not on it).
+function trackSpot(x, z) {
+  const lx = x - oval.x, lz = z - oval.z, R = oval.R, bend = Math.PI * R;
+  let s, out;
+  if (lx > 25) { out = Math.hypot(lx - 25, lz) - R; s = 50 + (Math.atan2(-lz, lx - 25) + Math.PI / 2) * R; }
+  else if (lx < -25) { out = Math.hypot(lx + 25, lz) - R; s = 100 + bend + (Math.atan2(lz, -(lx + 25)) + Math.PI / 2) * R; }
+  else if (lz > 0) { out = lz - R; s = lx + 25; }
+  else { out = -lz - R; s = 50 + bend + (25 - lx); }
+  return out > -1.2 && out < 6 * oval.lane + 1.2 ? { s: s % LAP, out } : null;
+}
+// The place on the track that is `s` metres round, in a given lane: [x, z].
+function trackPoint(s, lane) {
+  const R = oval.R, r = R + 0.6 + lane * oval.lane, bend = Math.PI * R;
+  s = ((s % LAP) + LAP) % LAP;
+  if (s < 50) return [oval.x - 25 + s, oval.z + r];
+  if (s < 50 + bend) { const a = (s - 50) / R - Math.PI / 2; return [oval.x + 25 + Math.cos(a) * r, oval.z - Math.sin(a) * r]; }
+  if (s < 100 + bend) return [oval.x + 25 - (s - 50 - bend), oval.z - r];
+  const a = (s - 100 - bend) / R - Math.PI / 2;
+  return [oval.x - 25 - Math.cos(a) * r, oval.z + Math.sin(a) * r];
+}
+const atCoach = () => !driving && !boating && !race && near(oval.coach.x, oval.coach.z, 2.6) && player.group.position.x > 2500;
+function startRace() {
+  const rivals = (npcs.cashiers || []).filter((one) => one.spot?.runner);
+  if (rivals.length < 5) return;
+  if (ill.leg) return toast('Coach Miller looks at your leg. "Yuh cyaan run wid a broken leg. See di doctor first."');
+  gun.equipped = false;
+  knifeOut = false;
+  fadeEl.style.opacity = 1;
+  (testView.has('race') ? (go) => go() : (go) => setTimeout(go, 900))(() => { // (straight away when testing)
+    const [x, z] = trackPoint(0, 0);
+    player.group.position.set(x, 0.72, z);
+    player.group.rotation.y = Math.PI / 2;
+    cam.yaw = -Math.PI / 2;
+    race = { phase: 'ready', timer: 4, time: 0, metres: 0, last: 0, off: 0, rivals: rivals.map((body, i) => ({ body, lane: i + 1, metres: 0, speed: 0, top: body.spot.pace * (0.97 + Math.random() * 0.06), done: 0 })) };
+    fadeEl.style.opacity = 0;
+    toast('THE OLYMPIC 200 METRES. One lap. Hold Shift to sprint when the gun goes. Stay on the track!');
+  });
+}
+function finishRace(place) {
+  const names = ['GOLD', 'SILVER', 'BRONZE'], prize = [training.gold ? 30000 : 150000, 60000, 30000][place - 1] || 0;
+  if (prize) { jmoney += prize; showMoney(); sfx('levelup'); }
+  if (place === 1) training.gold = true;
+  persist();
+  toast(place === 1 ? `GOLD! You are the Olympic champion in ${race.time.toFixed(2)} seconds! The whole island goes wild. Prize: ${jd(prize)}.`
+    : place <= 3 ? `${names[place - 1]}! You finish ${place === 2 ? 'second' : 'third'} in ${race.time.toFixed(2)} seconds. Prize: ${jd(prize)}. Run more laps and come back for the gold.`
+    : place ? `You finish ${place}th of six in ${race.time.toFixed(2)} seconds. No medal. Every lap of training makes you 1% faster: keep running.`
+    : 'DISQUALIFIED: you left the track.');
+  for (const rival of race.rivals) { rival.body.running = false; rival.body.group.position.copy(rival.body.home); rival.body.group.rotation.y = 0; }
+  race = null;
+}
+let raceHold = false;
+function updateTrack(dt) {
+  player.fit = 1 + 0.01 * Math.min(MOST_LAPS, training.laps); // what all that running has done for him
+  const here = player.group.position, onIsland = here.x > 2500, spot = onIsland && !driving && !boating ? trackSpot(here.x, here.z) : null;
+  if (testView.has('laps') && !updateTrack.set) { updateTrack.set = true; training.laps = Number(testView.get('laps')); }
+  if (testView.has('race') && !updateTrack.raced && !race && player.bones && (npcs.cashiers || []).some((one) => one.spot?.runner)) { updateTrack.raced = true; startRace(); }
+  if (testView.has('autorun') && player.bones && (!race || race.phase === 'run')) { // ?autorun carries him round the track at his sprinting speed
+    updateTrack.ran = (updateTrack.ran || 0) + 6.5 * player.fit * dt;
+    const [ax, az] = trackPoint(updateTrack.ran, 0);
+    here.set(ax, 0.72, az);
+  }
+  const spotNow = onIsland && !driving && !boating ? trackSpot(here.x, here.z) : null;
+  raceHold = false;
+  if (race) {
+    trackEl.style.display = 'block';
+    if (race.phase === 'ready') { // on your marks...
+      race.timer -= dt;
+      raceHold = true;
+      race.rivals.forEach((rival) => { const [x, z] = trackPoint(0, rival.lane); rival.body.group.position.set(x, 0.72, z); rival.body.group.rotation.y = Math.PI / 2; rival.body.running = false; });
+      trackEl.textContent = race.timer > 3 ? 'ON YOUR MARKS' : race.timer > 0.6 ? `${Math.ceil(race.timer - 0.6)}` : 'SET...';
+      if (race.timer <= 0) { race.phase = 'run'; sfx('shot'); race.last = 0; }
+      return;
+    }
+    race.time += dt;
+    // The others run their lanes.
+    for (const rival of race.rivals) {
+      if (rival.done) continue;
+      rival.speed = Math.min(rival.top, rival.speed + 5 * dt);
+      rival.metres += rival.speed * dt;
+      const [x, z] = trackPoint(rival.metres, rival.lane), [nx, nz] = trackPoint(rival.metres + 1, rival.lane);
+      rival.body.group.position.set(x, 0.72, z);
+      rival.body.group.rotation.y = Math.atan2(nx - x, nz - z);
+      rival.body.running = true;
+      if (rival.metres >= LAP) { rival.done = race.time; rival.body.running = false; }
+    }
+    // And he runs his.
+    if (spotNow) {
+      let step = spotNow.s - race.last;
+      if (step > LAP / 2) step -= LAP; else if (step < -LAP / 2) step += LAP;
+      race.metres += step;
+      race.last = spotNow.s;
+      race.off = 0;
+    } else if ((race.off += dt) > 2.5) return finishRace(0);
+    const ahead = race.rivals.filter((rival) => rival.done || rival.metres > race.metres).length;
+    trackEl.textContent = `OLYMPIC 200 m · ${Math.max(0, Math.round(LAP - race.metres))} m to go · you are ${['1st', '2nd', '3rd', '4th', '5th', '6th'][ahead]}`;
+    if (race.metres >= LAP) finishRace(1 + race.rivals.filter((rival) => rival.done).length);
+    else if (race.time > 90) finishRace(6);
+    return;
+  }
+  // Training: every full lap round, in the right direction, is one per cent more speed.
+  if (spotNow) {
+    if (lastSpot !== null) {
+      let step = spotNow.s - lastSpot;
+      if (step > LAP / 2) step -= LAP; else if (step < -LAP / 2) step += LAP;
+      lapMetres = Math.max(0, lapMetres + step);
+    }
+    lastSpot = spotNow.s;
+    if (lapMetres >= LAP) {
+      lapMetres -= LAP;
+      if (training.laps < MOST_LAPS) {
+        training.laps++;
+        sfx('levelup');
+        persist();
+        toast(`Lap ${training.laps}! You are now ${training.laps}% faster than when you started.${training.laps === 15 ? ' Coach Miller is watching you.' : ''}`);
+      } else toast('Another lap. You are as fast as a person can get.');
+    }
+  } else lastSpot = null;
+  const nearTrack = onIsland && Math.hypot(here.x - oval.x, here.z - oval.z) < 60;
+  trackEl.style.display = nearTrack ? 'block' : 'none';
+  if (nearTrack) trackEl.textContent = `Laps run: ${training.laps} · speed +${Math.min(MOST_LAPS, training.laps)}%${spotNow ? ` · this lap ${Math.round(lapMetres)} of 200 m` : ''}${training.gold ? ' · OLYMPIC CHAMPION' : ''}`;
+  if (atCoach() && !chatOpen) { usePrompt.textContent = 'Press E to enter the Olympic 200 metres'; usePrompt.style.display = 'block'; }
+}
+
 // --- The Irie Beach Bar on Jamaica: a round for everybody ------------------------------------------
 const ROUND_PRICE = 1200; // Jamaican dollars
 const atIrieBar = () => !driving && !boating && !trip && near(airport.barSpot.x, airport.barSpot.z, 2.6);
@@ -2293,6 +2812,7 @@ function drawPhone() {
     ? friends.map((name, i) => `<div style="display:flex;gap:10px;padding:6px 4px;border-top:1px solid #2a2e36"><b style="width:18px;color:#5fc8f0">${i + 1}</b><span style="flex:1">${name}</span><span style="opacity:0.6">call</span></div>`).join('')
     : '<div style="opacity:0.75;padding:10px 4px">No friends yet.<br><br>Face somebody, press <b>T</b> and ask: <i>"will you be my friend?"</i><br><br>They only go in here if they say yes.</div>';
   phoneEl.innerHTML = `<div style="text-align:center;font-size:11px;opacity:0.6">Day ${day} · ${String(Math.floor(hourNow)).padStart(2, '0')}:${String(Math.floor(hourNow % 1 * 60)).padStart(2, '0')} · Bank G$ ${bank.toLocaleString('en-US')}</div>
+    ${weatherLine()}
     <div style="font-size:18px;font-weight:bold;margin:8px 0 6px">Friends</div>${list}
     <div style="min-height:70px;margin-top:10px;padding:8px;background:#1b1f27;border-radius:10px;color:#ffe9a0">${phoneNote}</div>
     <div style="margin-top:8px;font-size:11px;opacity:0.6;text-align:center">${friends.length ? 'Press a number to call · ' : ''}P to put it away</div>`;
@@ -2423,6 +2943,10 @@ function useKey() {
   if (jailed > 0) return payBail();
   if (trim || trip) return;
   if (phoneOpen) return setPhone(false);
+  if (race) return;
+  if (atCoach()) return startRace();
+  if (runSpot()) return runUse();
+  if (atDoctor()) return visitDoctor();
   if (fxOpen) return setFx(false);
   if (islandAtm()) return setFx(true);
   if (atAltar()) return pray();
@@ -2456,6 +2980,7 @@ function useKey() {
   if (atCounter()) return setShop(true);
   if (atmOpen) return setAtm(false);
   if (atCashMachine()) return setAtm(true);
+  if (coconutPalm()) return eatCoconut();
   toggleFridge(house, player.group.position);
 }
 
@@ -2509,7 +3034,8 @@ let driving = false;
 function toggleDriving() {
   const here = player.group.position;
   if (trip) return; // a passenger stays in his seat
-  if (!driving && !boating) jackTraffic();                   // a car stopped in the road can be taken off its driver
+  if (!driving && !boating) jackTraffic();
+  if (!driving && !boating) jackIsland();                   // a car stopped in the road can be taken off its driver
   if (!driving && !boating) truck = nearVehicle() || truck; // the one he is standing beside
   const there = truck.group.position;
   // Boats: F gets in when next to one, and out again at the jetty or the bank.
@@ -2618,6 +3144,7 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyK') toggleKnife(); // draw or put away the knife
     if (e.code === 'KeyM') toggleMap(gameMap);
     if (e.code === 'KeyP') setPhone(!phoneOpen);
+    if (e.code === 'KeyB') useSpray();
     if (e.code === 'KeyX') startKick();
     if (e.code === 'KeyZ') startThrow();
     if (e.code === 'KeyQ') { // draw or put away the gun
@@ -2724,6 +3251,7 @@ function updateCamera() {
     lookAt.z + Math.cos(cam.yaw) * flat
   );
   // Indoors, stay under the ceiling.
+  camera.position.y = Math.max(camera.position.y, terrainAt(camera.position.x, camera.position.z) + 0.5); // (on a hillside, not inside it)
   camera.position.y = Math.min(camera.position.y, ceilingAt(p) - 0.25);
   // Don't let a wall come between the camera and the character: move in closer instead.
   camToLook.copy(camera.position).sub(lookAt);
@@ -2755,6 +3283,10 @@ const npcs = createNpcs(scene, MAP_SIZE / 2, testView.has('npc') ? new THREE.Vec
    policeStation.userData.officer,
    miamiPD.userData.officer, miamiPD.userData.guard, ...miamiPD.userData.prisoners, // Miami's desk officer, the cell guard, and the prisoners
    gatorBank.userData.teller, VAULT_PEOPLE.stranger, VAULT_PEOPLE.lenny, ...VAULT_PEOPLE.holders, // the bank teller, and the six people in the vault job
+   { x: 500, z: 13.2, facing: Math.PI, name: 'Dr Rivera', special: true, dye: 'doctor', say: 'Press E and I will take a look at you.' }, // the doctor in Miami General Hospital
+   ...airport.swimmers, ...[[990, -52, 'Brad'], [1002, -16, 'Kayla'], [984, 20, 'Marcus'], [1010, 44, 'Jess']].map(([x, z, name], i) => ({ x, z, facing: 0, name, woman: i % 2 === 1, swimmer: true })), // people swimming, off Jamaica and off Miami beach
+   airport.track.coach, ...airport.track.runners,  // the coach and the five other sprinters at the track
+   BIGGS, BENNY, CUSTOMS,                          // the cigarette run: the man with the crates, the buyer, and the customs officer
    ...airport.barPeople, ...airport.shopPeople,    // (and the shopkeepers, the jerk chef and the pastor)
    //                           // the barman and the regulars at the beach bar on Jamaica
    airport.clerk, ...airport.stations.filter((one) => one.seller).map((one) => one.seller), // the people who sell plane tickets
@@ -2780,7 +3312,7 @@ function onStrike(kind, npc) {
   player.slap = 1;
   hurt = 1;
   cam.yaw += kind === 'punch' ? 0.2 : 0.1;
-  if (kind === 'punch') knockDown(player, npc.group.position);
+  if (kind === 'punch') { knockDown(player, npc.group.position); if (Math.random() < 0.12) breakBone('arm'); }
   if (testView.has('slap')) console.log(`TEST ${kind} landed`);
 }
 if (testView.has('gun')) gun.equipped = true;
@@ -2850,7 +3382,7 @@ function step(dt) {
       const lizardInReach = target ? null : iguanas.find((i) => i.state !== 'dead' && i.state !== 'gone' && Math.hypot(i.group.position.x - at.x, i.group.position.z - at.z) < 1.3);
       if (lizardInReach) { killIguana(lizardInReach); playStrike('punch'); }
       if (target) {
-        const knockedOut = hitNpc(target, at, ringBlow(target, (knifeOut ? 75 : PUNCHES[punchHand].damage) * (1 + 0.15 * stats.strength))); // Strength: harder punches (and stabs)
+        const knockedOut = hitNpc(target, at, ringBlow(target, (knifeOut ? 75 : PUNCHES[punchHand].damage) * (1 + 0.15 * stats.strength) * (ill.arm ? 0.4 : 1))); // Strength: harder punches (and stabs)
         if (knifeOut) { // a stab draws blood
           const wound = target.group.position;
           emitBloodMist(gun, mistSpot.set(wound.x, wound.y + 1.2, wound.z));
@@ -3001,6 +3533,14 @@ function step(dt) {
       }
     } else updateTruck(truck, { throttle: testView.has('drive') ? 1 : input.z, steer: -input.x, handbrake: input.jump }, dt, MAP_SIZE / 2);
     if (driving) player.group.position.copy(truck.group.position); // the rest of the world follows the truck (unless a flight has just let him off)
+    if (driving && truck.bike) { // on a motorbike he can be seen, sitting astride it
+      player.group.visible = true;
+      player.group.position.x -= Math.sin(truck.heading) * 0.22;
+      player.group.position.z -= Math.cos(truck.heading) * 0.22;
+      player.group.position.y += 0.8 - (HIP_HEIGHT - SIT_DROP);
+      player.group.rotation.set(0, truck.heading, truck.group.rotation.z);
+      sitPlayer(player, dt, false);
+    }
     // The camera swings round to stay behind the truck.
     if (Math.abs(truck.speed) > 1.5) {
       let turn = truck.heading + Math.PI - cam.yaw;
@@ -3070,6 +3610,16 @@ function step(dt) {
   updateCity(city, player.group.position, dt);
   updateSea(seaParts, time);
   updateSeaLife(seaLife, time, dt, player.group.position, flagShown === 'purple');
+  // Swimming on the surface, his hands throw up a little spray.
+  if (player.swim > 0.6 && !(player.dive > 0.3) && !driving && !boating && player.bones) {
+    splashWait -= dt;
+    if (splashWait <= 0) {
+      splashWait = 0.28;
+      const hand = (splashSide = !splashSide) ? player.bones.handL : player.bones.handR;
+      hand.getWorldPosition(puffSpot);
+      if (puffSpot.y < 0.5) { puffSpot.y = 0.22; emitSmoke(gun, puffSpot, 0.45); }
+    }
+  }
   if (testView.has('shark')) { const fish = seaLife.sharks[0].group; fish.position.set(player.group.position.x + 0.4, player.group.position.y + 1.1, player.group.position.z + 3.6); fish.rotation.y = Number(testView.get('shark')) || 1.57; } // ?shark holds one in front of the camera
   updateTurfs(time);
   healOverTime(dt);
@@ -3155,9 +3705,14 @@ function step(dt) {
   updateBeach(dt);
   updateJob(dt);
   roadPrompts();
+  updateIllness(dt);
+  updateSmuggle();
+  updateStorm(dt);
+  updateTrack(dt);
   // The map: him, his truck, and whoever the vault job needs him to find next.
   if (testView.has('map') && !gameMap.open) toggleMap(gameMap);
   const marks = driving && truck === homeTruck ? [] : [{ x: homeTruck.group.position.x, z: homeTruck.group.position.z, colour: '#e0483a', name: 'Your truck' }];
+  if (bag.crate) marks.push({ x: BENNY.x, z: BENNY.z, colour: '#ffe27a', name: 'Benny (take him the crate)' });
   if (job.stage === 0) marks.push({ ...VAULT_PEOPLE.stranger, colour: '#ffffff', name: 'A stranger' });
   if (job.stage === 1) marks.push({ ...VAULT_PEOPLE.lenny, colour: '#ffe27a', name: 'Lenny' });
   if (job.stage === 2) holders.forEach((person, i) => { if (!job.known[i]) marks.push({ ...person, colour: '#ffe27a', name: person.name }); });

@@ -22,65 +22,77 @@ function fishShape() {
   return geometry;
 }
 
-// A shark about three metres long: a smooth torpedo of a body, slate grey on top and white
-// underneath, with a pointed snout, a tall back fin, long swept side fins, gill slits, a
-// mouth full of teeth, and a crescent tail with the top lobe longer than the bottom.
+// A shark about three and a half metres long, modelled as one smooth skin: a pointed, slightly
+// flattened snout, a deep chest, and a body tapering to a narrow tail stalk. It is slate grey
+// above and white below, with the two meeting in a soft wavy line along its flanks, and the
+// skin has a wet sheen. Curved fins, gill slits, dark eyes, and a mouth full of teeth underneath.
 function makeShark() {
   const shark = new THREE.Group();
-  // The hide: grey along the back, fading through a wavy line to a white belly.
-  const hide = document.createElement('canvas');
-  hide.width = 128;
-  hide.height = 64;
-  const pen = hide.getContext('2d');
-  for (let x = 0; x < 128; x++) {
-    const around = Math.abs(x / 127 - 0.5) * 2;                    // 0 along the top of the back, 1 under the belly
-    for (let y = 0; y < 64; y++) {
-      const edge = 0.56 + Math.sin(y * 0.4) * 0.03, mix = Math.min(1, Math.max(0, (around - edge) / 0.1));
-      const shade = 0.9 + Math.sin(x * 1.7 + y * 2.3) * 0.04;
-      pen.fillStyle = `rgb(${(88 + mix * 150) * shade},${(100 + mix * 142) * shade},${(112 + mix * 130) * shade})`;
-      pen.fillRect(x, y, 1, 1);
+  const add = (mesh, x, y, z, parent = shark) => { mesh.position.set(x, y, z); parent.add(mesh); return mesh; };
+  // The body: an oval ring at each station along its length. [z, half-width, half-height, how high its middle sits]
+  const stations = [[1.78, 0.004, 0.004, -0.03], [1.7, 0.07, 0.05, -0.03], [1.52, 0.15, 0.11, -0.02], [1.28, 0.23, 0.19, 0], [1.0, 0.3, 0.28, 0.01], [0.62, 0.36, 0.37, 0.02], [0.2, 0.39, 0.42, 0.02],
+    [-0.25, 0.36, 0.4, 0.02], [-0.7, 0.29, 0.33, 0.03], [-1.1, 0.19, 0.23, 0.04], [-1.4, 0.11, 0.14, 0.05], [-1.62, 0.06, 0.09, 0.06], [-1.76, 0.035, 0.07, 0.06]];
+  const AROUND = 24, points = [], colours = [], faces = [];
+  const back = new THREE.Color(0x4f5b66), belly = new THREE.Color(0xeef0ee), shade = new THREE.Color();
+  stations.forEach(([z, wide, tall, lift], i) => {
+    for (let j = 0; j <= AROUND; j++) {
+      const a = (j / AROUND) * Math.PI * 2, up = Math.cos(a);                    // up: 1 along the top of the back, -1 under the belly
+      const flat = up < 0 ? 0.86 : 1;                                             // a flatter underside
+      points.push(Math.sin(a) * wide, lift + up * tall * flat, z);
+      const line = -0.18 + Math.sin(z * 3.1) * 0.08 + (z > 1.0 ? (z - 1.0) * 0.5 : 0); // where grey meets white: wavy, and lower toward the snout
+      const mix = Math.min(1, Math.max(0, (line - up) / 0.22 + 0.5));
+      shade.copy(back).lerp(belly, mix * mix * (3 - 2 * mix)).multiplyScalar(0.93 + 0.07 * Math.sin(z * 9 + a * 5) * (1 - mix)); // faint mottling on the back
+      colours.push(shade.r, shade.g, shade.b);
+    }
+    if (i) for (let j = 0; j < AROUND; j++) { const p = (i - 1) * (AROUND + 1) + j, q = p + AROUND + 1; faces.push(p, p + 1, q, q, p + 1, q + 1); }
+  });
+  const skinShape = new THREE.BufferGeometry();
+  skinShape.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+  skinShape.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3));
+  skinShape.setIndex(faces);
+  skinShape.computeVertexNormals();
+  add(new THREE.Mesh(skinShape, new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.38, clearcoat: 0.6, clearcoatRoughness: 0.35 })), 0, 0, 0);
+  // Fins: curved blades, thick at the root and fine at the edge.
+  const finSkin = new THREE.MeshPhysicalMaterial({ color: 0x47525c, roughness: 0.4, clearcoat: 0.5, clearcoatRoughness: 0.4, side: THREE.DoubleSide });
+  const blade = (draw, thickness = 0.05) => {
+    const outline = new THREE.Shape();
+    draw(outline);
+    const geometry = new THREE.ExtrudeGeometry(outline, { depth: thickness * 0.4, bevelEnabled: true, bevelThickness: thickness * 0.3, bevelSize: thickness * 0.5, bevelSegments: 3, curveSegments: 14 });
+    geometry.translate(0, 0, -thickness * 0.2);
+    return new THREE.Mesh(geometry, finSkin);
+  };
+  const upright = (mesh) => { mesh.rotation.y = -Math.PI / 2; return mesh; };   // an outline drawn [forward, up], stood along the fish
+  add(upright(blade((s) => { s.moveTo(0.4, -0.05); s.quadraticCurveTo(0.12, 0.34, -0.26, 0.7); s.quadraticCurveTo(-0.38, 0.72, -0.44, 0.62); s.quadraticCurveTo(-0.24, 0.3, -0.4, -0.05); })), 0, 0.4, 0.22); // the back fin: swept, with a curved trailing edge
+  add(upright(blade((s) => { s.moveTo(0.14, 0); s.quadraticCurveTo(0, 0.1, -0.13, 0.17); s.quadraticCurveTo(-0.08, 0.06, -0.14, 0); }, 0.03)), 0, 0.24, -1.0);   // the small second back fin
+  add(upright(blade((s) => { s.moveTo(0.13, 0); s.quadraticCurveTo(0, -0.1, -0.12, -0.16); s.quadraticCurveTo(-0.07, -0.05, -0.13, 0); }, 0.03)), 0, -0.14, -0.98); // and the one beneath it
+  for (const side of [-1, 1]) {
+    const pectoral = add(blade((s) => { s.moveTo(0, 0.24); s.quadraticCurveTo(0.6, 0.08, 1.0, -0.56); s.quadraticCurveTo(0.9, -0.52, 0.82, -0.42); s.quadraticCurveTo(0.42, -0.14, 0, -0.2); }), side * 0.28, -0.22, 0.6); // the long side fins
+    pectoral.rotation.set(Math.PI / 2 + 0.3, 0, side > 0 ? -0.45 : Math.PI + 0.45);
+    const pelvic = add(blade((s) => { s.moveTo(0, 0.12); s.quadraticCurveTo(0.2, 0.02, 0.3, -0.16); s.quadraticCurveTo(0.14, -0.1, 0, -0.1); }, 0.03), side * 0.14, -0.26, -0.55);
+    pelvic.rotation.set(Math.PI / 2 + 0.5, 0, side > 0 ? -0.5 : Math.PI + 0.5);
+    // A black eye with a pale ring, a nostril, and five gill slits.
+    const dark = new THREE.MeshStandardMaterial({ color: 0x050607, roughness: 0.15 });
+    add(new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 10), new THREE.MeshStandardMaterial({ color: 0x8f9aa2, roughness: 0.4 })), side * 0.215, 0.07, 1.3).scale.set(0.35, 1, 1);
+    add(new THREE.Mesh(new THREE.SphereGeometry(0.036, 12, 10), dark), side * 0.228, 0.07, 1.3).scale.set(0.5, 1, 1);
+    add(new THREE.Mesh(new THREE.SphereGeometry(0.014, 6, 6), dark), side * 0.085, -0.07, 1.64);
+    for (let slit = 0; slit < 5; slit++) {
+      const gill = add(new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.21 - slit * 0.014, 0.012), new THREE.MeshStandardMaterial({ color: 0x1b2026, roughness: 0.6 })), side * (0.335 + slit * 0.006), 0.0, 0.93 - slit * 0.07);
+      gill.rotation.z = side * 0.18;
     }
   }
-  const skinMap = new THREE.CanvasTexture(hide);
-  skinMap.colorSpace = THREE.SRGBColorSpace;
-  const skin = new THREE.MeshStandardMaterial({ map: skinMap, roughness: 0.42, metalness: 0.05 });
-  const grey = new THREE.MeshStandardMaterial({ color: 0x566068, roughness: 0.45, side: THREE.DoubleSide });
-  const dark = new THREE.MeshBasicMaterial({ color: 0x0a0b0c });
-  const add = (mesh, x, y, z, parent = shark) => { mesh.position.set(x, y, z); parent.add(mesh); return mesh; };
-  // The body, turned from its outline: [distance along it, radius], snout first.
-  const outline = [[1.6, 0], [1.5, 0.07], [1.3, 0.17], [1.0, 0.29], [0.6, 0.39], [0.1, 0.43], [-0.4, 0.39], [-0.9, 0.29], [-1.3, 0.17], [-1.5, 0.1]];
-  const body = new THREE.LatheGeometry(outline.map(([along, radius]) => new THREE.Vector2(radius, along)), 22);
-  body.rotateX(Math.PI / 2);                                       // lay it along the length of the fish
-  add(new THREE.Mesh(body, skin), 0, 0, 0).scale.set(0.82, 1, 1);  // a little taller than it is wide
-  // Fins: flat blades cut from an outline.
-  const blade = (points, thickness = 0.035) => {
-    const shape = new THREE.Shape(points.map(([x, y]) => new THREE.Vector2(x, y)));
-    const geometry = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.012, bevelSegments: 1 });
-    geometry.translate(0, 0, -thickness / 2);
-    return new THREE.Mesh(geometry, grey);
-  };
-  const upright = (mesh) => { mesh.rotation.y = -Math.PI / 2; return mesh; };       // an outline drawn [along, up] stood on the fish's back
-  add(upright(blade([[-0.42, 0], [0.34, 0], [-0.3, 0.62], [-0.46, 0.56], [-0.34, 0.2]])), 0, 0.36, 0.2);      // the back fin, swept and notched
-  add(upright(blade([[-0.14, 0], [0.12, 0], [-0.12, 0.17]], 0.02)), 0, 0.2, -0.95);                           // the small second back fin
-  add(upright(blade([[-0.12, 0], [0.12, 0], [-0.1, -0.16]], 0.02)), 0, -0.19, -0.9);                          // and the one underneath
-  for (const side of [-1, 1]) {
-    const fin = add(blade([[0, 0.2], [0, -0.16], [0.86, -0.42], [0.7, -0.2]]), side * 0.26, -0.2, 0.62);     // long side fins, angled down and back
-    fin.rotation.set(Math.PI / 2 + 0.25, 0, side > 0 ? -0.5 : Math.PI + 0.5);
-    add(new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), dark), side * 0.2, 0.07, 1.16);               // flat black eyes
-    for (let slit = 0; slit < 5; slit++) add(new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.2 - slit * 0.012, 0.014), dark), side * (0.315 - slit * 0.004), -0.02, 0.84 - slit * 0.075).rotation.z = side * 0.2; // gills
+  // The mouth: a dark crescent under the snout, with a row of white teeth round it.
+  const mouth = add(new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.022, 8, 20, Math.PI), new THREE.MeshStandardMaterial({ color: 0x2a0f12, roughness: 0.5 })), 0, -0.2, 1.18);
+  mouth.rotation.x = Math.PI / 2 - 0.2;
+  for (let tooth = 0; tooth < 13; tooth++) {
+    const a = (tooth + 0.5) / 13 * Math.PI;
+    add(new THREE.Mesh(new THREE.ConeGeometry(0.013, 0.05, 4), new THREE.MeshStandardMaterial({ color: 0xf7f5ee, roughness: 0.3 })), Math.cos(a) * 0.16, -0.228, 1.18 + Math.sin(a) * 0.16).rotation.x = Math.PI;
   }
-  // The mouth, curved under the snout, with a row of teeth.
-  const mouth = add(new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.022, 6, 16, Math.PI), dark), 0, -0.2, 1.08);
-  mouth.rotation.x = Math.PI / 2 - 0.25;
-  for (let tooth = 0; tooth < 9; tooth++) {
-    const angle = (tooth + 0.5) / 9 * Math.PI;
-    add(new THREE.Mesh(new THREE.ConeGeometry(0.014, 0.05, 4), new THREE.MeshBasicMaterial({ color: 0xf4f2ea })), Math.cos(angle) * 0.15, -0.225, 1.08 + Math.sin(angle) * 0.15).rotation.x = Math.PI;
-  }
-  // The tail swings from side to side.
+  // The tail: a tall crescent, the upper lobe much longer than the lower. It sweeps from side to side.
   const tail = new THREE.Group();
-  tail.position.set(0, 0, -1.45);
-  add(upright(blade([[0.14, 0.09], [0.14, -0.09], [-0.2, -0.06], [-0.5, -0.5], [-0.34, -0.08], [-0.3, 0.1], [-0.82, 0.86], [-0.3, 0.3], [-0.06, 0.1]], 0.03)), 0, 0, 0, tail);
+  tail.position.set(0, 0.06, -1.7);
+  add(upright(blade((s) => { s.moveTo(0.16, 0.08); s.quadraticCurveTo(-0.34, 0.36, -0.86, 1.02); s.quadraticCurveTo(-0.5, 0.36, -0.36, 0.02); s.quadraticCurveTo(-0.4, -0.3, -0.54, -0.6); s.quadraticCurveTo(-0.24, -0.3, 0.16, -0.08); }, 0.045)), 0, 0, 0, tail);
   shark.add(tail);
+  shark.scale.setScalar(1.12);
   return { group: shark, tail };
 }
 
@@ -174,10 +186,10 @@ export function createSeaLife(scene, shoreX) {
   life.add(bells, trails);
 
   // --- Sharks and turtles ---
-  const sharks = [[70, -60, 26], [95, 40, 32], [60, 110, 22]].map(([out, z, radius], i) => {
+  const sharks = [[70, -60, 26], [95, 40, 32], [60, 110, 22], [1790, 40, 22, true], [1762, 76, 26, true]].map(([out, z, radius, far], i) => { // (the last two live off the beach on Jamaica)
     const shark = makeShark();
     life.add(shark.group);
-    return { ...shark, x: shoreX + out, z, homeX: shoreX + out, homeZ: z, radius, phase: i * 2.1, speed: 0.16 + i * 0.03 };
+    return { ...shark, far, x: shoreX + out, z, homeX: shoreX + out, homeZ: z, radius, phase: i * 2.1, speed: 0.16 + i * 0.03 };
   });
   const turtles = [[34, 20, 9], [52, -80, 12]].map(([out, z, radius], i) => {
     const turtle = makeTurtle();
@@ -194,7 +206,7 @@ const UP = new THREE.Vector3(0, 1, 0);
 
 // Each frame: everything swims. `near`: only worked out while the player is at the beach or out at sea.
 // danger: true on a purple-flag day, when the sharks come in close to where people swim.
-export function updateSeaLife(sea, time, dt, playerPosition, danger) {
+export function updateSeaLife(sea, time, dt, playerPosition, alarm) {
   const near = playerPosition.x > sea.shoreX - 120;
   sea.life.visible = near;
   if (!near) return;
@@ -223,6 +235,7 @@ export function updateSeaLife(sea, time, dt, playerPosition, danger) {
   sea.bells.instanceMatrix.needsUpdate = sea.trails.instanceMatrix.needsUpdate = true;
 
   for (const shark of sea.sharks) {
+    const danger = alarm && !shark.far;
     // On a dangerous day they leave deep water and patrol just off the beach, level with the swimmer.
     const wantX = danger ? sea.shoreX + 26 : shark.homeX, wantZ = danger ? THREE.MathUtils.clamp(playerPosition.z, -120, 120) + (shark.homeZ > 0 ? 10 : -10) : shark.homeZ;
     shark.x += (wantX - shark.x) * Math.min(1, 0.25 * dt);

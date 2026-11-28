@@ -8,7 +8,7 @@
 // inside they are bright panels of daylight.
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { addObstacle, addFloor, addInterior } from './world.js';
+import { addObstacle, addFloor, addInterior, bendInWind, WIND_WAY, BEND } from './world.js';
 import { clearings } from './grass.js';
 
 const WALL_HEIGHT = 2.8;
@@ -132,7 +132,7 @@ export function makeMaterials() {
     hedge: new THREE.MeshStandardMaterial({ map: leafy, bumpMap: leafy, bumpScale: 3, roughness: 1 }),
     metal: plain(0x9a9c9c, 0.5, { metalness: 0.6 }),
     brass: plain(0xc9a24a, 0.35, { metalness: 0.9 }),
-    trunk: new THREE.MeshStandardMaterial({ map: bark, bumpMap: bark, bumpScale: 3, roughness: 1 }),
+    trunk: bendInWind(new THREE.MeshStandardMaterial({ map: bark, bumpMap: bark, bumpScale: 3, roughness: 1 })), // (palm trunks bend in a gale)
     frond: frond(0xffffff),
     dryFrond: frond(0xd9b36a),            // old fronds, browning as they hang
     coconut: plain(0x6e5a34, 0.8),
@@ -446,6 +446,29 @@ export function addPalm(parent, m, x, z, height, lean) {
   }
   palm.add(crown);
   parent.add(palm);
+  palmTrees.push({ palm, crown, height, lean });
+}
+// Is there a palm tree within reach of this spot?
+export function nearPalm(position, reach) {
+  return palmTrees.some(({ palm }) => Math.hypot(palm.matrixWorld.elements[12] - position.x, palm.matrixWorld.elements[14] - position.z) < reach);
+}
+// Every palm there is, so that their crowns can ride on the trunks as they bend.
+const palmTrees = [];
+const tiltAxis = new THREE.Vector3();
+let wasBlowing = false;
+// Each frame: the trunks bend by themselves (see bendInWind); this moves each crown to the top of
+// its bent trunk and tips it over with the wind. near: only palms within sight of here are moved.
+export function swayPalms(strength, time, near) {
+  if (strength <= 0 && !wasBlowing) return;
+  wasBlowing = strength > 0;
+  for (const { palm, crown, height, lean } of palmTrees) {
+    const m = palm.matrixWorld.elements;
+    if (Math.abs(m[12] - near.x) > 320 || Math.abs(m[14] - near.z) > 320) continue;
+    const gust = 0.75 + 0.25 * Math.sin(time * 2 + m[12]), over = strength * height * height * BEND * gust;
+    const turn = palm.rotation.y, dx = WIND_WAY[0] * Math.cos(turn) - WIND_WAY[1] * Math.sin(turn), dz = WIND_WAY[0] * Math.sin(turn) + WIND_WAY[1] * Math.cos(turn); // the wind, as this palm sees it
+    crown.position.set(lean + dx * over, height - 0.1 - over * 0.12, dz * over);
+    crown.quaternion.setFromAxisAngle(tiltAxis.set(dz, 0, -dx).normalize(), Math.min(0.85, strength * (0.45 + 0.2 * Math.sin(time * 3.1 + m[14])) * gust));
+  }
 }
 
 // --- The house ---------------------------------------------------------------

@@ -1,3 +1,27 @@
+// The wind: how hard it is blowing (0 to 1) and a clock for its gusts. Shared by everything that bends in it.
+export const wind = { strength: { value: 0 }, time: { value: 0 } };
+export const WIND_WAY = [-0.89, 0.45];  // the way it blows, along x and z
+export const BEND = 0.012;              // how far a tree leans: this times the wind, times the square of the height
+// Make whatever is drawn with this material lean and sway in the wind: the higher up, the further over.
+export function bendInWind(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.windStrength = wind.strength;
+    shader.uniforms.windTime = wind.time;
+    shader.vertexShader = 'uniform float windStrength;\nuniform float windTime;\n' + shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      #ifdef USE_INSTANCING
+        mat4 windFrame = modelMatrix * instanceMatrix;
+      #else
+        mat4 windFrame = modelMatrix;
+      #endif
+      float windHeight = max(transformed.y, 0.0);
+      float windLean = windStrength * windHeight * windHeight * ${BEND} * (0.75 + 0.25 * sin(windTime * 2.0 + windFrame[3].x));
+      transformed += inverse(mat3(windFrame)) * vec3(${WIND_WAY[0]}, 0.0, ${WIND_WAY[1]}) * windLean * length(windFrame[1].xyz);
+      transformed.y -= windLean * 0.12;`);
+  };
+  material.customProgramCacheKey = () => 'bends-in-wind';
+  return material;
+}
+
 // Solid things in the world (walls, tree trunks) that people can't walk
 // through and bullets can't pass. Each one is an upright box.
 export const obstacles = []; // { minX, maxX, minZ, maxZ, height }
@@ -48,7 +72,7 @@ export function pushOut(position, radius, canSwim = false) {
 export const EAST_EDGE = 3440;
 
 // The sea, if there is one: everything beyond x is water. docks are piers you can walk out on.
-export const sea = { active: false, x: 0, docks: [] };
+export const sea = { active: false, x: 0, docks: [], lands: [] }; // lands: islands out at sea, as functions giving the depth of water at a place (0 on dry land), or undefined away from them
 
 // The lake, if there is one: its centre, rough radius, and the jetties you may walk out on.
 export const water = { active: false, x: 0, z: 0, radius: 0, docks: [] };
@@ -90,8 +114,18 @@ export function addFloor(minX, maxX, minZ, maxZ, height) {
   floors.push(floor);
   return floor;
 }
+// Ground that rises and falls (the hills of Jamaica): functions giving its height at a place, or -Infinity where there is none.
+const terrains = [];
+export function addTerrain(heightAt) {
+  terrains.push(heightAt);
+}
+export function terrainAt(x, z) {
+  let height = -Infinity;
+  for (const heightAt of terrains) height = Math.max(height, heightAt(x, z));
+  return height;
+}
 export function floorAt(position) {
-  let height = 0;
+  let height = Math.max(0, terrainAt(position.x, position.z));
   for (const f of floors) {
     // Only floors he could step onto from where he is: a rooftop far overhead doesn't count.
     if (f.height <= position.y + 0.7 && position.x > f.minX && position.x < f.maxX && position.z > f.minZ && position.z < f.maxZ) height = Math.max(height, f.height);
@@ -139,6 +173,7 @@ export function seaBedAt(position) {
 // How deep the lake is at a spot: 0 on land or on a jetty, getting deeper away from the bank.
 export function waterDepthAt(position) {
   if (sea.active && position.x > sea.x) { // the sea shelves gently away from the beach
+    for (const land of sea.lands) { const depth = land(position.x, position.z); if (depth !== undefined) return depth; }
     if (sea.docks.some((d) => position.x > d.minX && position.x < d.maxX && position.z > d.minZ && position.z < d.maxZ)) return 0;
     return Math.min(2, (position.x - sea.x) * 0.12);
   }

@@ -325,7 +325,7 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
   const depth = waterDepthAt(group.position);
   player.swim = (player.swim || 0) + ((depth > 0.95 ? 1 : 0) - (player.swim || 0)) * Math.min(1, 4 * dt);
   const swimming = player.swim > 0.5;
-  const speed = swimming ? (input.sprint ? 3.2 : 2.0) : depth > 0.3 ? 2.0 : crouching ? CROUCH_SPEED : sprinting ? SPRINT_SPEED : WALK_SPEED;
+  const speed = (swimming ? (input.sprint ? 3.2 : 2.0) : depth > 0.3 ? 2.0 : crouching ? CROUCH_SPEED : sprinting ? SPRINT_SPEED : WALK_SPEED) * (player.slow ?? 1) * (player.fit ?? 1); // (slow: he is ill or hurt. fit: all the laps he has run)
 
   const fx = -Math.sin(cameraYaw), fz = -Math.cos(cameraYaw); // camera forward
   const rx = Math.cos(cameraYaw), rz = -Math.sin(cameraYaw);  // camera right
@@ -498,13 +498,17 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
       turnBone(thigh, sideways, -s * breast * kick * 0.75);
       turnBone(thigh, forwards, s * breast * side * kick * 0.5);
       turnBone(shin, sideways, s * breast * kick * 1.5);
-      turnBone(thigh, sideways, s * (crawl * flutter * 0.32 + tread * (-0.35 + Math.sin(t * 1.5 + lag) * 0.3)));
-      turnBone(shin, sideways, s * (crawl * (0.18 + 0.18 * flutter) + tread * (0.55 + Math.cos(t * 1.5 + lag) * 0.3)));
+      turnBone(thigh, sideways, s * (crawl * flutter * 0.2 + tread * (-0.35 + Math.sin(t * 1.5 + lag) * 0.3)));
+      turnBone(shin, sideways, s * (crawl * (0.12 + 0.22 * Math.max(0, flutter)) + tread * (0.55 + Math.cos(t * 1.5 + lag) * 0.3)));
     }
     // He holds his head up out of the water to see where he is going, and his back arches a little.
     turnBone(b.head, sideways, -s * (0.75 * crawl + 0.55 * breast * along));
     turnBone(b.spine2, sideways, -0.22 * s * crawl);
-    turnBone(b.spine, forwards, s * crawl * Math.sin(t) * 0.16);               // the shoulders roll with each stroke
+    // The whole body rolls with each stroke, and every other stroke he turns his face out to the side to breathe.
+    fistTarget.set(0, 1, 0).applyQuaternion(group.quaternion);                  // the line of his body, from feet to head
+    turnBone(b.spine, fistTarget, -s * crawl * Math.sin(t) * 0.3);
+    turnBone(b.spine1, fistTarget, -s * crawl * Math.sin(t) * 0.14);
+    turnBone(b.head, fistTarget, s * crawl * Math.max(0, Math.sin(t * 0.5)) ** 3 * 0.9);
   }
 
   // On the floor and getting up.

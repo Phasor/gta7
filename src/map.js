@@ -9,7 +9,7 @@ const PLACES = [
   [-20, 70, 'Palm Ave airfield', '#dfeaff', 'A'],
   [777.5, 12, 'Gator Bank', '#3fb04a', '$'],
   [546, 16, 'Lucky Palm Casino', '#ffd23a', 'C'],
-  [494, 15, 'Hospital', '#ff5a4a', '+'],
+  [494, 15, 'Hospital · doctor', '#ff5a4a', '+'],
   [830.5, -21.5, 'Fight Club', '#e0352b', 'F'],
   [624, 41, 'Cold Ones beer', '#e0a82a', 'B'],
   [643, -44, 'Sharp Cuts barber', '#c9b4f0', 'S'],

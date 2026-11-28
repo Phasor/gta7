@@ -4,8 +4,9 @@
 // be flown: a propeller plane and a private jet. Airliners land and take off
 // by themselves.
 import * as THREE from 'three';
-import { addObstacle, addFloor, addInterior, pushOut, floorAt, waterDepthAt, sea, EAST_EDGE } from './world.js';
-import { clearings } from './grass.js';
+import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { addObstacle, addFloor, addInterior, addTerrain, pushOut, floorAt, waterDepthAt, sea, EAST_EDGE, bendInWind } from './world.js';
+import { clearings, daylight } from './grass.js';
 import { block, canvasTexture, speckle, makeMaterials, addPalm } from './house.js';
 import { label } from './store.js';
 import { addAtm } from './city.js';
@@ -213,13 +214,38 @@ const JX = 3000, JZ = -100, JS = 420;
 const COAST = [[-1.0, 0.05], [-0.93, -0.12], [-0.8, -0.24], [-0.6, -0.3], [-0.3, -0.33], [0, -0.3], [0.3, -0.27], [0.6, -0.2], [0.85, -0.1], [1.0, 0.02],
   [0.88, 0.15], [0.62, 0.18], [0.45, 0.25], [0.27, 0.2], [0.1, 0.31], [-0.1, 0.24], [-0.35, 0.2], [-0.55, 0.29], [-0.75, 0.22], [-0.9, 0.15]].map(([x, z]) => [x * JS, z * JS]);
 // Is this spot (measured from the middle of the island) on land?
+// (The shoreline smoothed into a curve: this is the exact edge of the sand that is drawn.)
+const SHORE = new THREE.SplineCurve(COAST.concat([COAST[0]]).map(([x, z]) => new THREE.Vector2(x, z))).getPoints(170).map((point) => [point.x, point.y]);
 function onLand(x, z) {
+  if (Math.abs(x) > JS * 1.06 || Math.abs(z) > 165) return false;
   let within = false;
-  for (let i = 0, j = COAST.length - 1; i < COAST.length; j = i++) {
-    const [xi, zi] = COAST[i], [xj, zj] = COAST[j];
+  for (let i = 0, j = SHORE.length - 1; i < SHORE.length; j = i++) {
+    const [xi, zi] = SHORE[i], [xj, zj] = SHORE[j];
     if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) within = !within;
   }
   return within;
+}
+// Flat ground, kept clear of hills and jungle: the airstrip and its houses, the town, the bar, and his hut. [west, east, north, south]
+const ZONES = [[-315, -45, -62, 14], [-197, -83, 11, 77], [-68, -2, 39, 51], [-66, -54, 2, 51], [-4, 262, 20, 98], [-322, -278, 54, 88], [-268, -236, 62, 98]];
+// The Blue Mountains and the hills west of them: [x, z, how far each spreads, how high].
+const PEAKS = [[300, -8, 92, 62], [256, 10, 72, 40], [348, 4, 56, 34], [206, -28, 66, 30], [150, -66, 60, 24], [62, -78, 56, 17], [-30, -84, 50, 13], [-130, -96, 44, 9], [-60, 70, 46, 10], [-190, 60, 40, 8]];
+const ease = (from, to, t) => { const u = Math.min(1, Math.max(0, (t - from) / (to - from))); return u * u * (3 - 2 * u); };
+// How high the ground stands above the level of the town, at a spot measured from the middle of the island.
+function hillHeight(x, z) {
+  let height = 0;
+  for (const [px, pz, spread, tall] of PEAKS) {
+    const t = Math.hypot(x - px, z - pz) / spread;
+    if (t < 1) height += tall * (1 - t * t) ** 2;
+  }
+  // Ridges and gullies down the mountainsides, and gently rolling ground everywhere else.
+  height += Math.sin(x * 0.09 + Math.sin(z * 0.05) * 2) * Math.cos(z * 0.11 + Math.sin(x * 0.04) * 2) * Math.min(4.5, height * 0.14);
+  height += (Math.sin(x * 0.045 + 1) * Math.cos(z * 0.06) + 1) * 1.1 + (Math.sin(x * 0.13) * Math.sin(z * 0.17) + 1) * 0.35;
+  // ...but level round the buildings, and sinking to nothing toward the beach.
+  let level = 1;
+  for (const [x0, x1, z0, z1] of ZONES) level = Math.min(level, ease(1, 20, Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(z0 - z, 0, z - z1))));
+  let shore = 0;
+  for (const scale of [0.96, 0.91, 0.86, 0.8]) if (onLand(x / scale, z / scale)) shore += 0.25;
+  return Math.max(0, height * level * shore);
 }
 // Is this place on the map on Jamaica, and not too near the water's edge?
 export function onJamaica(x, z, shrink = 0.86) {
@@ -403,7 +429,7 @@ export function createAirport(scene) {
   const kit = makeMaterials(), KEY = 0.68, kx = JX, kz = JZ, S = JS, inside = onLand;
   const slab = (scale, top, depth, material) => { // the island's outline, a little bigger or smaller, as a thick slab
     const outline = new THREE.Shape();
-    outline.setFromPoints(new THREE.SplineCurve(COAST.concat([COAST[0]]).map(([x, z]) => new THREE.Vector2(x * scale, z * scale))).getPoints(140));
+    outline.setFromPoints(SHORE.map(([x, z]) => new THREE.Vector2(x * scale, z * scale)));
     const geometry = new THREE.ExtrudeGeometry(outline, { depth, bevelEnabled: false });
     geometry.rotateX(Math.PI / 2);
     const mesh = new THREE.Mesh(geometry, material);
@@ -414,42 +440,223 @@ export function createAirport(scene) {
   const ground = (base, dots) => new THREE.MeshStandardMaterial({ roughness: 1, map: canvasTexture(128, (ctx, s) => { ctx.fillStyle = base; ctx.fillRect(0, 0, s, s); speckle(ctx, s, dots, 0.08); }, 0.14, 0.14) });
   slab(1.06, -0.5, 9, ground('#d9c690', 4000));                // sand shelving away under the water
   slab(1.0, 0.6, 10, ground('#f0deaa', 5000));                 // white beaches all the way round
-  slab(0.93, KEY, 0.3, ground('#4f8a3a', 7000));               // green inside
-  // Dry land, for walking and swimming: the outline cut into strips from west to east.
-  for (let x = -S; x < S; x += 14) {
-    let north = null, south = null;
-    for (let z = -150; z <= 150; z += 1) if (inside(x + 7, z)) { north ??= z; south = z; }
-    if (north === null) continue;
-    addFloor(kx + x - 0.1, kx + x + 14.1, kz + north, kz + south, KEY); // (the strips overlap a little, so there is no crack to fall through)
-    sea.docks.push({ minX: kx + x - 0.1, maxX: kx + x + 14.1, minZ: kz + north, maxZ: kz + south });
-  }
-  // The Blue Mountains in the east, hazy blue-green, and lower green hills running west from them.
-  for (const [px, pz, wide, tall, colour] of [[300, -8, 52, 58, 0x3f6f7a], [256, 14, 44, 44, 0x3f7a6a], [346, 4, 34, 34, 0x4a7f86], [208, -24, 40, 30, 0x3f8a4a], [150, -66, 36, 21, 0x4a9a44], [60, -78, 34, 15, 0x4f9a40], [-30, -84, 30, 12, 0x4f9a40]]) {
-    const hill = new THREE.Mesh(new THREE.ConeGeometry(wide, tall, 9, 3), new THREE.MeshStandardMaterial({ color: colour, roughness: 1, flatShading: true }));
-    hill.position.set(kx + px, KEY + tall / 2 - 0.5, kz + pz);
-    hill.rotation.y = px;
-    hill.castShadow = true;
-    scene.add(hill);
-    addObstacle(kx + px - wide * 0.55, kx + px + wide * 0.55, kz + pz - wide * 0.55, kz + pz + wide * 0.55, tall * 0.6);
-  }
-  // Where the jungle does not grow: the airstrip and the houses by it, the town, and the bar.
-  const cleared = (x, z) => (x > -315 && x < -45 && z > -62 && z < 14) || (x > 6 && x < 262 && z > 20 && z < 98) || (x > -322 && x < -278 && z > 54 && z < 88) || (x > -268 && x < -236 && z > 62 && z < 98);
-  const spots = [];
-  for (let tries = 0; tries < 7000 && spots.length < 650; tries++) {
-    const x = (Math.random() * 2 - 1) * S * 0.9, z = (Math.random() * 2 - 1) * 125;
-    if (!inside(x / 0.88, z / 0.88) || cleared(x, z)) continue;
-    spots.push([x, z, 0.8 + Math.random() * 0.9]);
-  }
-  const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.16, 0.24, 3, 6), plain(0x5c4a36, 0.9), spots.length);
-  const crowns = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(2.1, 1), new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true }), spots.length);
-  const place = new THREE.Matrix4(), leaf = new THREE.Color();
-  spots.forEach(([x, z, size], i) => {
-    trunks.setMatrixAt(i, place.makeScale(size, size, size).setPosition(kx + x, KEY + 1.5 * size, kz + z));
-    crowns.setMatrixAt(i, place.makeScale(size, size * 0.8, size).setPosition(kx + x, KEY + 3.6 * size, kz + z));
-    crowns.setColorAt(i, leaf.setHSL(0.27 + Math.random() * 0.08, 0.55, 0.22 + Math.random() * 0.12));
+  slab(0.93, KEY - 0.12, 0.3, ground('#3f7a34', 7000)); // (hidden under the sheet of ground made below)               // green inside
+  // Dry land and shallows, for walking, wading and swimming. The beach is dry right out to its
+  // edge; then there is a strip to wade through, then a lagoon to swim in, and the deep sea beyond.
+  sea.lands.push((x, z) => {
+    const lx = x - kx, lz = z - kz;
+    if (Math.abs(lx) > S * 1.3 || Math.abs(lz) > 210) return undefined;
+    if (onLand(lx, lz)) return 0;
+    if (onLand(lx / 1.06, lz / 1.06)) return 0.55;
+    if (onLand(lx / 1.24, lz / 1.24)) return 1.5;
+    return undefined;
   });
-  crowns.castShadow = true;
-  scene.add(trunks, crowns);
+  // The lagoon: clear turquoise water in a band round the whole island, fading out into the deep blue.
+  {
+    const points = [], shades = [], faces = [];
+    SHORE.forEach(([x, z], i) => {
+      points.push(kx + x * 0.995, 0.2, kz + z * 0.995, kx + x * 1.13, 0.2, kz + z * 1.13, kx + x * 1.3, 0.2, kz + z * 1.3);
+      shades.push(0.45, 0.95, 0.86, 0.62, 0.2, 0.82, 0.8, 0.5, 0.1, 0.6, 0.72, 0);
+      if (i) { const p = (i - 1) * 3; faces.push(p, p + 1, p + 3, p + 3, p + 1, p + 4, p + 1, p + 2, p + 4, p + 4, p + 2, p + 5); }
+    });
+    const ring = new THREE.BufferGeometry();
+    ring.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+    ring.setAttribute('color', new THREE.Float32BufferAttribute(shades, 4));
+    ring.setIndex(faces);
+    const lagoon = new THREE.Mesh(ring, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+    lagoon.renderOrder = 3;                                                  // over the sea's own surface
+    lagoon.onBeforeRender = () => lagoon.material.color.setScalar(0.2 + 0.8 * daylight.value); // (darker at night, like everything else)
+    scene.add(lagoon);
+  }
+  // --- The land itself: the Blue Mountains, the hills, and the rolling ground under the jungle ---
+  // One sheet of ground that follows hillHeight() (below, at the top of this file). You walk on it.
+  {
+    const STEP = 4, across = Math.round(2 * 432 / STEP) + 1, down = Math.round(2 * 148 / STEP) + 1;
+    const spots = new Float32Array(across * down * 3), tints = new Float32Array(across * down * 3), looks = new Float32Array(across * down * 2), corners = [];
+    const jungleGreen = new THREE.Color(0x3f7a34), deepGreen = new THREE.Color(0x2f5f3a), rock = new THREE.Color(0x7a7466), haze = new THREE.Color(0x8fa4a8), shade = new THREE.Color();
+    for (let j = 0; j < down; j++) for (let i = 0; i < across; i++) {
+      const x = -432 + i * STEP, z = -148 + j * STEP, h = hillHeight(x, z), n = (j * across + i) * 3;
+      spots[n] = kx + x; const grassy = inside(x / 0.93, z / 0.93); spots[n + 1] = inside(x, z) ? KEY + h + 0.012 : -3; spots[n + 2] = kz + z; // (it lies just over the flat ground too, so the whole island is one green; off the edge it dips under the sand)
+      const steep = Math.min(1, Math.hypot(hillHeight(x + 2, z) - h, hillHeight(x, z + 2) - h) / 2.2); // bare rock shows where it is steep
+      shade.copy(jungleGreen).lerp(deepGreen, Math.min(1, h / 22)).lerp(rock, Math.max(0, steep - 0.8) * 1.2); // green all the way up; bare rock only on the very steepest faces
+      shade.multiplyScalar(0.88 + 0.24 * Math.sin(x * 0.7 + z * 1.3) * Math.sin(x * 0.31 - z * 0.53));
+      if (!grassy) shade.setRGB(1.19, 1.1, 0.85); // out on the beach it is sand, so the grass fades into it
+      tints[n] = shade.r; tints[n + 1] = shade.g; tints[n + 2] = shade.b;
+      looks[(j * across + i) * 2] = x / 7; looks[(j * across + i) * 2 + 1] = z / 7;
+      if (i && j) { const a = (j - 1) * across + i - 1, b = a + 1, c = a + across, d = c + 1; corners.push(a, c, b, b, c, d); }
+    }
+    const land = new THREE.BufferGeometry();
+    land.setAttribute('position', new THREE.BufferAttribute(spots, 3));
+    land.setAttribute('color', new THREE.BufferAttribute(tints, 3));
+    land.setAttribute('uv', new THREE.BufferAttribute(looks, 2));
+    land.setIndex(corners);
+    land.computeVertexNormals();
+    const hills = new THREE.Mesh(land, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, map: canvasTexture(128, (ctx, s) => {
+      ctx.fillStyle = '#c9c9c9'; ctx.fillRect(0, 0, s, s);
+      speckle(ctx, s, 6000, 0.14);
+      for (let i = 0; i < 60; i++) { ctx.fillStyle = `rgba(${i % 2 ? 255 : 0},${i % 2 ? 255 : 0},${i % 2 ? 255 : 0},0.07)`; ctx.beginPath(); ctx.ellipse(Math.random() * s, Math.random() * s, 4 + Math.random() * 9, 3 + Math.random() * 6, Math.random() * 3, 0, 7); ctx.fill(); }
+    }, 1, 1) }));
+    hills.receiveShadow = true;
+    scene.add(hills);
+    addTerrain((x, z) => (Math.abs(x - kx) < 432 && Math.abs(z - kz) < 148 && inside(x - kx, z - kz) ? KEY + hillHeight(x - kx, z - kz) : -Infinity)); // (only on the island itself, not the sea round it)
+  }
+  const cleared = (x, z) => ZONES.some(([x0, x1, z0, z1]) => x > x0 && x < x1 && z > z0 && z < z1);
+
+  const junglePalms = [];
+  // --- The jungle ---
+  // Drawn from a handful of plants, each repeated hundreds of times in one go: tall rainforest trees
+  // with a spreading leafy crown, banana plants, clumps of bamboo, and ferns covering the ground.
+  {
+    const rnd = (low, high) => low + Math.random() * (high - low);
+    const picture = (w, h, draw) => { const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h; draw(canvas.getContext('2d'), w, h); const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace; return texture; };
+    // Leaves, painted: a mass of overlapping leaves for the crowns...
+    const canopyLeaves = picture(256, 256, (ctx, w) => {
+      ctx.fillStyle = '#24481f'; ctx.fillRect(0, 0, w, w);
+      for (let i = 0; i < 900; i++) {
+        const light = Math.random();
+        ctx.fillStyle = `rgb(${30 + light * 70},${70 + light * 110},${24 + light * 40})`;
+        ctx.beginPath(); ctx.ellipse(Math.random() * w, Math.random() * w, 3 + Math.random() * 7, 1.5 + Math.random() * 3, Math.random() * 3.14, 0, 7); ctx.fill();
+      }
+    });
+    canopyLeaves.wrapS = canopyLeaves.wrapT = THREE.RepeatWrapping;
+    canopyLeaves.repeat.set(3, 2);
+    // ...a fan of fern fronds, see-through between them...
+    const fernLeaves = picture(256, 256, (ctx, w) => {
+      for (let frond = 0; frond < 7; frond++) {
+        const lean = (frond - 3) * 0.36, long = 190 + Math.random() * 50;
+        ctx.save(); ctx.translate(w / 2, w - 4); ctx.rotate(lean);
+        for (let k = 0; k < 26; k++) {
+          const along = k / 26, y = -along * long, reach = (1 - along) * 34 + 5;
+          ctx.strokeStyle = `rgb(${40 + along * 50},${110 + along * 70},${36 + along * 30})`; ctx.lineWidth = 4.2 - along * 2.2;
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(-reach, y - 9); ctx.moveTo(0, y); ctx.lineTo(reach, y - 9); ctx.stroke();
+        }
+        ctx.strokeStyle = '#3a5a22'; ctx.lineWidth = 2.4; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -long); ctx.stroke();
+        ctx.restore();
+      }
+    });
+    // ...and one great banana leaf, with its rib and veins.
+    const bananaLeaf = picture(128, 512, (ctx, w, h) => {
+      const blade = ctx.createLinearGradient(0, 0, w, 0);
+      blade.addColorStop(0, '#3f8a2a'); blade.addColorStop(0.5, '#62b23a'); blade.addColorStop(1, '#3f8a2a');
+      ctx.fillStyle = blade;
+      ctx.beginPath(); ctx.moveTo(w / 2, 6); ctx.bezierCurveTo(w * 1.02, h * 0.2, w * 1.0, h * 0.8, w / 2, h - 4); ctx.bezierCurveTo(0, h * 0.8, -w * 0.02, h * 0.2, w / 2, 6); ctx.fill();
+      ctx.strokeStyle = 'rgba(30,70,20,0.45)'; ctx.lineWidth = 1.2;
+      for (let y = 20; y < h - 10; y += 9) { ctx.beginPath(); ctx.moveTo(w / 2, y); ctx.lineTo(4, y - 14); ctx.moveTo(w / 2, y); ctx.lineTo(w - 4, y - 14); ctx.stroke(); }
+      ctx.strokeStyle = '#b9d98a'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(w / 2, 4); ctx.lineTo(w / 2, h); ctx.stroke();
+    });
+    const cutOut = (map, extra = {}) => new THREE.MeshStandardMaterial({ map, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.85, ...extra });
+
+    // Where everything goes: anywhere on the island that is not beach, town, airstrip or bare mountain top.
+    const scatter = (count, tries, ok) => {
+      const found = [];
+      for (let attempt = 0; attempt < tries && found.length < count; attempt++) {
+        const x = rnd(-0.94, 0.94) * S, z = rnd(-135, 135);
+        if (!inside(x / 0.9, z / 0.9) || cleared(x, z)) continue;
+        const h = hillHeight(x, z);
+        if (ok(h, x, z)) found.push([x, z, h]);
+      }
+      return found;
+    };
+    const at = new THREE.Matrix4(), turn = new THREE.Quaternion(), size = new THREE.Vector3(), where = new THREE.Vector3(), lean = new THREE.Euler(), tint = new THREE.Color();
+    const stand = (mesh, i, x, y, z, sx, sy, sz, spin = 0, tiltX = 0, tiltZ = 0) => mesh.setMatrixAt(i, at.compose(where.set(kx + x, y, kz + z), turn.setFromEuler(lean.set(tiltX, spin, tiltZ)), size.set(sx, sy, sz)));
+
+    // Rainforest trees: a tall trunk flaring at the foot, and a crown of three or four leafy masses.
+    const trees = scatter(430, 9000, (h) => h < 44);
+    const trunkShape = new THREE.CylinderGeometry(0.32, 0.5, 1, 8, 4);
+    { const p = trunkShape.attributes.position; for (let i = 0; i < p.count; i++) { const low = Math.max(0, -p.getY(i) - 0.3) * 4; p.setX(i, p.getX(i) * (1 + low * 0.9)); p.setZ(i, p.getZ(i) * (1 + low * 0.9)); } } // buttress roots
+    trunkShape.translate(0, 0.5, 0);
+    const bark = new THREE.MeshStandardMaterial({ roughness: 0.95, map: canvasTexture(64, (ctx, s) => { ctx.fillStyle = '#5a4a3a'; ctx.fillRect(0, 0, s, s); for (let i = 0; i < 40; i++) { ctx.fillStyle = `rgba(${i % 2 ? 20 : 150},${i % 2 ? 15 : 130},${i % 2 ? 10 : 100},0.25)`; ctx.fillRect(Math.random() * s, 0, 1 + Math.random() * 2, s); } ctx.fillStyle = 'rgba(70,110,50,0.3)'; for (let i = 0; i < 12; i++) ctx.fillRect(Math.random() * s, Math.random() * s, 6, 4); }, 2, 3) });
+    const trunks = new THREE.InstancedMesh(trunkShape, bark, trees.length);
+    let crownShape = new THREE.IcosahedronGeometry(1, 2);
+    crownShape.deleteAttribute('normal');
+    crownShape = mergeVertices(crownShape);
+    { const p = crownShape.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i), puff = 1 + 0.2 * Math.sin(x * 6.1 + y * 4.3) * Math.cos(z * 5.7 + x * 2.9) + 0.1 * Math.sin(y * 11 + z * 9); p.setXYZ(i, x * puff, y * puff * 0.62, z * puff); } }
+    crownShape.computeVertexNormals();
+    const crowns = new THREE.InstancedMesh(crownShape, new THREE.MeshStandardMaterial({ map: canopyLeaves, roughness: 0.9 }), trees.length * 4);
+    trees.forEach(([x, z, h], i) => {
+      // A rainforest tree, not an oak: a tall, straight, slender trunk with no low branches, and far
+      // overhead a wide, flat umbrella of leaves in spreading layers.
+      const tall = rnd(12, 20), thick = rnd(0.55, 0.95), y = KEY + h - 0.2;
+      trees[i][3] = tall;
+      stand(trunks, i, x, y, z, thick, tall, thick, rnd(0, 6));
+      addObstacle(kx + x - 0.4 * thick, kx + x + 0.4 * thick, kz + z - 0.4 * thick, kz + z + 0.4 * thick, y + tall, y - 1);
+      for (let part = 0; part < 4; part++) {
+        const wide = part ? rnd(2.6, 4.2) : rnd(5, 7.5), off = part ? rnd(3, 5.5) : 0, angle = part * 2.1 + i;
+        stand(crowns, i * 4 + part, x + Math.cos(angle) * off, y + tall + (part ? rnd(-2.4, -0.8) : 0.3), z + Math.sin(angle) * off, wide, wide * (part ? 0.42 : 0.36), wide, rnd(0, 6));
+        crowns.setColorAt(i * 4 + part, tint.setHSL(rnd(0.26, 0.34), rnd(0.45, 0.65), rnd(0.42, 0.7)));
+      }
+    });
+    trunks.castShadow = crowns.castShadow = true;
+    scene.add(trunks, crowns);
+
+    // Banana plants: a thick green stem and seven great arching leaves.
+    const ribbon = (width, steps, path) => { // a strip following a path: [out, up] at each step
+      const points = [], looks = [], faces = [];
+      for (let k = 0; k <= steps; k++) { const [out, up] = path(k / steps), half = width * 0.5 * Math.sin(Math.PI * (0.12 + 0.88 * k / steps) * 0.98 + 0.05); points.push(-half, up, out, half, up, out); looks.push(0, k / steps, 1, k / steps); if (k) { const a = (k - 1) * 2; faces.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); } }
+      const strip = new THREE.BufferGeometry();
+      strip.setAttribute('position', new THREE.Float32BufferAttribute(points, 3)); strip.setAttribute('uv', new THREE.Float32BufferAttribute(looks, 2)); strip.setIndex(faces); strip.computeVertexNormals();
+      return strip;
+    };
+    const leafSet = mergeGeometries(Array.from({ length: 7 }, (_, n) => {
+      const droop = 0.5 + (n % 3) * 0.25, leaf = ribbon(0.62, 6, (t) => [t * 1.9, 1.5 + Math.sin(t * Math.PI * 0.85) * (1.1 - droop * 0.4) - t * t * droop * 1.6]);
+      leaf.rotateY(n * (Math.PI * 2 / 7) + (n % 2) * 0.2);
+      return leaf;
+    }));
+    const bananas = scatter(190, 5000, (h) => h < 20);
+    const bananaLeaves = new THREE.InstancedMesh(leafSet, cutOut(bananaLeaf), bananas.length);
+    const bananaStems = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.07, 0.13, 1.7, 7).translate(0, 0.85, 0), new THREE.MeshStandardMaterial({ color: 0x7a9a4a, roughness: 0.8 }), bananas.length);
+    bananas.forEach(([x, z, h], i) => { const big = rnd(0.8, 1.5), spin = rnd(0, 6); stand(bananaLeaves, i, x, KEY + h - 0.15, z, big, big, big, spin); stand(bananaStems, i, x, KEY + h - 0.15, z, big, big, big, spin); });
+    bananaLeaves.castShadow = true;
+    scene.add(bananaLeaves, bananaStems);
+
+    // Bamboo: clumps of tall jointed canes, leaning outward, with a feathery top.
+    const clump = mergeGeometries(Array.from({ length: 9 }, (_, n) => {
+      const cane = new THREE.CylinderGeometry(0.035, 0.05, 6.5, 5).translate(0, 3.25, 0);
+      cane.rotateZ(0.05 + (n % 4) * 0.045); cane.rotateY(n * 0.7); cane.translate(Math.cos(n * 0.7) * 0.28, 0, Math.sin(n * 0.7) * 0.28);
+      return cane;
+    }));
+    const bamboos = scatter(70, 3000, (h) => h < 14);
+    const canes = new THREE.InstancedMesh(clump, new THREE.MeshStandardMaterial({ roughness: 0.6, map: canvasTexture(32, (ctx, s) => { ctx.fillStyle = '#9ab04a'; ctx.fillRect(0, 0, s, s); ctx.fillStyle = '#5f7a2a'; for (let y = 0; y < s; y += 6) ctx.fillRect(0, y, s, 1.4); }, 1, 5) }), bamboos.length);
+    const plumes = new THREE.InstancedMesh(new THREE.PlaneGeometry(2.6, 2.6).translate(0, 1.3, 0), cutOut(fernLeaves, { color: 0xb9d06a }), bamboos.length * 2);
+    bamboos.forEach(([x, z, h], i) => { const big = rnd(0.8, 1.3), spin = rnd(0, 6); stand(canes, i, x, KEY + h - 0.1, z, big, big, big, spin); for (let k = 0; k < 2; k++) stand(plumes, i * 2 + k, x, KEY + h + 5.2 * big, z, big, big, big, spin + k * 1.57); });
+    canes.castShadow = true;
+    scene.add(canes, plumes);
+
+    // Ferns and undergrowth, thick on the ground everywhere under the trees.
+    const fan = mergeGeometries([0, 1, 2].map((k) => new THREE.PlaneGeometry(1.5, 1.3).translate(0, 0.62, 0).rotateY(k * Math.PI / 3)));
+    const ferns = scatter(1500, 16000, (h) => h < 40);
+    const undergrowth = new THREE.InstancedMesh(fan, cutOut(fernLeaves), ferns.length);
+    ferns.forEach(([x, z, h], i) => { const big = rnd(0.7, 1.7); stand(undergrowth, i, x, KEY + h - 0.12, z, big, big * rnd(0.7, 1.2), big, rnd(0, 6)); undergrowth.setColorAt(i, tint.setHSL(rnd(0.24, 0.36), 0.5, rnd(0.55, 0.9))); });
+    scene.add(undergrowth);
+    // Coconut palms all through the forest: a leaning, ringed trunk, a burst of long fronds, and a cluster of nuts.
+    const frondLeaf = picture(128, 512, (ctx, w, h) => {
+      for (let y = 8; y < h - 6; y += 7) {
+        const reach = (w / 2 - 4) * Math.sin(Math.PI * (0.1 + 0.9 * y / h)), light = 90 + (y % 21) * 3;
+        ctx.strokeStyle = `rgb(${40 + light * 0.3},${light + 50},${34})`; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(w / 2, y); ctx.lineTo(w / 2 - reach, y - 22); ctx.moveTo(w / 2, y); ctx.lineTo(w / 2 + reach, y - 22); ctx.stroke();
+      }
+      ctx.strokeStyle = '#c9c070'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h); ctx.stroke();
+    });
+    const palmTrunk = new THREE.CylinderGeometry(0.11, 0.19, 8, 7, 8).translate(0, 4, 0);
+    { const p = palmTrunk.attributes.position; for (let i = 0; i < p.count; i++) p.setX(i, p.getX(i) + (p.getY(i) / 8) ** 2 * 1.3); } // it curves as it climbs
+    palmTrunk.computeVertexNormals();
+    const palmCrown = mergeGeometries(Array.from({ length: 11 }, (_, n) => {
+      const sag = 1.6 + (n % 3) * 0.5, frond = ribbon(1.15, 7, (t) => [t * 3.4, Math.sin(t * Math.PI * 0.8) * 1.0 - t * t * sag]);
+      return frond.rotateY(n * (Math.PI * 2 / 11)).translate(1.3, 8, 0);
+    }));
+    const nuts = mergeGeometries([0, 1, 2, 3].map((n) => new THREE.SphereGeometry(0.15, 7, 6).translate(1.3 + Math.cos(n * 1.6) * 0.2, 7.75, Math.sin(n * 1.6) * 0.2)));
+    const palmSpots = scatter(170, 5000, (h) => h < 26);
+    const palms = new THREE.InstancedMesh(mergeGeometries([palmTrunk, palmCrown, nuts], true), [
+      new THREE.MeshStandardMaterial({ roughness: 0.9, map: canvasTexture(32, (ctx, s) => { ctx.fillStyle = '#8a7a62'; ctx.fillRect(0, 0, s, s); ctx.fillStyle = '#5c4f3e'; for (let y = 0; y < s; y += 4) ctx.fillRect(0, y, s, 1.3); }, 1, 6) }),
+      cutOut(frondLeaf), new THREE.MeshStandardMaterial({ color: 0x5a4020, roughness: 0.8 })], palmSpots.length);
+    for (const material of palms.material) bendInWind(material); // they lean over in a hurricane
+    for (const [x, z] of palmSpots) junglePalms.push([kx + x, kz + z]);
+    palmSpots.forEach(([x, z, h], i) => { const big = rnd(0.85, 1.6); stand(palms, i, x, KEY + h - 0.2, z, big, big, big, rnd(0, 6)); });
+    palms.castShadow = true;
+    scene.add(palms);
+    palms.frustumCulled = false;
+    for (const mesh of [trunks, crowns, bananaLeaves, bananaStems, canes, plumes, undergrowth]) mesh.frustumCulled = false; // (each is spread over the whole island)
+  }
   // Palms along the beaches.
   COAST.forEach(([x, z], i) => {
     for (const along of [0, 0.5]) {
@@ -606,6 +813,11 @@ export function createAirport(scene) {
   // --- Kingston: the town. Two streets of houses, a market square, a church and a jerk shack ---
   const road = plain(0xc9b48a, 1);                                                                     // packed sandy earth
   block(scene, road, 226, 0.03, 8, kx + 123, KEY + 0.02, kz + 45).castShadow = false;                  // Main Street
+  // The road on from Kingston: west out of town, north through the trees, then west again past the houses by the airstrip.
+  block(scene, road, 64, 0.03, 8, kx - 28, KEY + 0.02, kz + 45).castShadow = false;
+  block(scene, road, 8, 0.03, 45, kx - 60, KEY + 0.021, kz + 26.5).castShadow = false;
+  block(scene, road, 244, 0.03, 7, kx - 178, KEY + 0.02, kz + 8).castShadow = false;
+  const islandRoad = [[kx + 234, kz + 45], [kx - 60, kz + 45], [kx - 60, kz + 8], [kx - 298, kz + 8]];
   block(scene, road, 8, 0.03, 44, kx + 148, KEY + 0.021, kz + 71).castShadow = false;                  // Market Street, running south from it
   block(scene, road, 34, 0.03, 24, kx + 180, KEY + 0.02, kz + 78).castShadow = false;                  // the market square
   for (let i = 0; i < 8; i++) {
@@ -613,12 +825,17 @@ export function createAirport(scene) {
     if (i !== 3 && i !== 4) cottage(kx + 68 + i * 20 + (i > 3 ? 12 : 0), kz + 52.1, 7 + ((i + 1) % 3), 6, i + 3, -1); // south side (with a gap for Market Street)
   }
   for (let i = 0; i < 3; i++) cottage(kx + 136.9, kz + 62 + i * 9, 6, 6, i + 5, 1);                    // down the west side of Market Street
-  block(scene, sign('KINGSTON', 'MAIN STREET', '#009b3a', '#fed100', 512, 160), 3.6, 1.1, 0.12, kx + 8, KEY + 2.6, kz + 51);
-  for (const side of [-1, 1]) block(scene, plain(0x8a6240, 0.8), 0.16, 2.6, 0.16, kx + 8 + side * 1.6, KEY + 1.3, kz + 51);
+  block(scene, sign('KINGSTON', 'MAIN STREET', '#009b3a', '#fed100', 512, 160), 3.6, 1.1, 0.12, kx - 3, KEY + 2.6, kz + 51);
+  for (const side of [-1, 1]) block(scene, plain(0x8a6240, 0.8), 0.16, 2.6, 0.16, kx - 3 + side * 1.6, KEY + 1.3, kz + 51);
   // Two shops at the west end of Main Street, and a cash machine between them and the houses.
   shop(kx + 24, kz + 37.2, "MISS LOU'S GROCERY", 'PATTIES · COLD DRINKS · EVERYTHING', 0xf2c230, 'grocery', 'Miss Lou', [0xe0483a, 0xf2c230, 0x2fa85a, 0x3fa0e0, 0xf2f0e6, 0xff9a3a]);
   shop(kx + 40, kz + 37.2, 'BLUE MOUNTAIN COFFEE', 'FRESH ROASTED · RUM CAKE', 0x3f7a8a, 'coffee', 'Mr Clarke', [0x4a3220, 0x6b4a30, 0xf2f0e6, 0x8a5a2e, 0x2f2018]);
   islandAtms.push(addAtm(scene, kx + 51, kz + 40.3, 0, KEY), addAtm(scene, kx - 163.5, kz - 21, 0, KEY));
+  // The clinic, at the very end of the street: white, with a red cross, and the doctor behind the desk.
+  shop(kx + 9, kz + 37.2, 'KINGSTON CLINIC', 'DOCTOR · NO APPOINTMENT NEEDED', 0xf4f6f6, 'clinic', 'Dr Campbell', [0xf4f6f6, 0xd9382b, 0x9fd0e6, 0xf4f6f6, 0x3fa0e0]);
+  const doctor = tills.pop();                                                                          // (he is seen, not shopped at)
+  Object.assign(shopPeople[shopPeople.length - 1], { dye: 'doctor', say: 'Press E an mek mi look pon yuh.' });
+  for (const [bw, bh] of [[1.2, 0.36], [0.36, 1.2]]) block(scene, new THREE.MeshBasicMaterial({ color: 0xe0352b }), bw, bh, 0.06, kx + 9 - 3.6, KEY + 4.5, kz + 37.2 + 3.84);
   // Market stalls: a table of fruit under a striped awning.
   const FRUIT = [0xf2c230, 0xe0483a, 0x3fa85a, 0xff9a3a, 0x8a3fc0, 0xf2e04a];
   for (let i = 0; i < 6; i++) {
@@ -703,6 +920,50 @@ export function createAirport(scene) {
     scene.add(shade);
   }
   const keyHut = hut(kx - 170, kz - 20, KEY, 'BACK TO THE MAINLAND');
+  // --- The running track: a 200-metre oval with six lanes, between the airstrip and the south shore ---
+  const TR = 100 / (2 * Math.PI), trackX = kx - 140, trackZ = kz + 46, LANE = 1.2, trackOut = TR + 6 * LANE + 0.2;
+  {
+    const oval = (radius) => { const path = new THREE.Path(); path.moveTo(-25, -radius); path.lineTo(25, -radius); path.absarc(25, 0, radius, -Math.PI / 2, Math.PI / 2, false); path.lineTo(-25, radius); path.absarc(-25, 0, radius, Math.PI / 2, Math.PI * 1.5, false); return path; };
+    const surface = new THREE.Shape(oval(trackOut).getPoints(40));
+    surface.holes.push(new THREE.Path(oval(TR - 0.2).getPoints(40)));
+    const track = new THREE.Mesh(new THREE.ShapeGeometry(surface), new THREE.MeshStandardMaterial({ color: 0xb5523a, roughness: 0.95 }));
+    track.rotation.x = -Math.PI / 2;
+    track.position.set(trackX, KEY + 0.03, trackZ);
+    track.receiveShadow = true;
+    scene.add(track);
+    const paint = new THREE.LineBasicMaterial({ color: 0xf7f4ea });
+    for (let lane = 0; lane <= 6; lane++) {                                                               // the white lines between the lanes
+      const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(oval(TR + lane * LANE).getPoints(48).map((p) => new THREE.Vector3(p.x, 0, p.y))), paint);
+      line.position.set(trackX, KEY + 0.05, trackZ);
+      scene.add(line);
+    }
+    block(scene, white, 0.3, 0.01, 6 * LANE, trackX - 25, KEY + 0.05, trackZ + TR + 3 * LANE).castShadow = false; // start and finish line
+    // A stand along the north side, a podium on the grass in the middle, and the sign.
+    for (let step = 0; step < 4; step++) block(scene, plain(0x9aa0a6, 0.8), 40, 0.5, 1.2, trackX, KEY + 0.25 + step * 0.5, trackZ - trackOut - 2.4 - step * 1.2);
+    addObstacle(trackX - 20, trackX + 20, trackZ - trackOut - 6.6, trackZ - trackOut - 1.8, KEY + 2.2);
+    for (const [px, tall, colour] of [[0, 1.0, 0xf2c84a], [-1.5, 0.7, 0xc9ccd0], [1.5, 0.45, 0xb9783a]]) block(scene, plain(colour, 0.5, { metalness: 0.4 }), 1.4, tall, 1.4, trackX + px, KEY + tall / 2, trackZ);
+    addObstacle(trackX - 2.2, trackX + 2.2, trackZ - 0.7, trackZ + 0.7, KEY + 1.1);
+    block(scene, sign('NATIONAL STADIUM', 'RUN LAPS: EVERY LAP MAKES YOU 1% FASTER', '#009b3a', '#fed100', 1024, 224), 9, 1.9, 0.14, trackX, KEY + 4.4, trackZ - trackOut - 7);
+    for (const side of [-1, 1]) block(scene, plain(0x8a6240, 0.8), 0.2, 4.4, 0.2, trackX + side * 4, KEY + 2.2, trackZ - trackOut - 7);
+    block(scene, sign('RUN THIS WAY  →', null, '#111111', '#fed100', 512, 96), 3, 0.55, 0.06, trackX - 18, KEY + 1.5, trackZ + trackOut + 1.2);
+    block(scene, plain(0x8a6240, 0.8), 0.12, 1.5, 0.12, trackX - 18, KEY + 0.75, trackZ + trackOut + 1.2);
+  }
+  const track = {
+    x: trackX, z: trackZ, R: TR, lane: LANE,
+    coach: { x: trackX - 27.5, z: trackZ + TR - 2.2, facing: 0, name: 'Coach Miller', skin: 'dark', wear: 'cap', special: true, dye: 'joe', say: 'Run laps, get fast. When yuh ready fi di Olympics, press E.' },
+    runners: [['Dash Okoro', 'zora', 6.9], ['Flynn Carter', 'baron', 7.2], ['Kenji Mori', 'doctor', 7.5], ['Luca Rossi', 'spike', 7.8], ['Tariq Bello', 'joe', 8.1]].map(([name, dye, pace], i) => (
+      { x: trackX - 20 + i * 1.6, z: trackZ + TR - 2.6, facing: 0, name, dye, pace, skin: i % 2 ? 'dark' : 'tan', runner: true })),
+  };
+  // The beach flag, on the sand by the bar: the same colours as on the mainland, and a board saying what they mean.
+  const beachFlag = new THREE.MeshBasicMaterial({ color: 0x2fae4a, side: THREE.DoubleSide });
+  for (const fx of [-292, -244]) {
+    block(scene, steel, 0.1, 8, 0.1, kx + fx, KEY + 4, kz + 93);
+    block(scene, beachFlag, 2.0, 1.2, 0.04, kx + fx + 1.05, KEY + 7.3, kz + 93);
+    addObstacle(kx + fx - 0.12, kx + fx + 0.12, kz + 92.88, kz + 93.12, 8);
+  }
+  block(scene, sign('BEACH FLAGS', 'GREEN SWIM · YELLOW CARE · RED WAVES · PURPLE SHARKS', '#1f6fb5', '#fff8e8', 1024, 192), 4.2, 0.8, 0.08, kx - 289, KEY + 1.9, kz + 93);
+  // People swimming off the beach there.
+  const swimmers = [[-296, 108, 'Kemar'], [-284, 114, 'Tanya'], [-262, 112, 'Devon'], [-246, 118, 'Shanice']].map(([sx2, sz2, name], i) => ({ x: kx + sx2, z: kz + sz2, facing: 0, name, woman: i % 2 === 1, skin: i % 3 ? 'dark' : 'tan', swimmer: true }));
   // His own hut, on the south-west shore a little way along from the bar: plank walls, a thatched
   // roof, a porch looking out to sea, a hammock, and inside a bed to sleep in.
   const myX = kx - 252, myZ = kz + 78;
@@ -747,7 +1008,7 @@ export function createAirport(scene) {
     { x: kx + bar[0] - 0.5, z: kz + bar[1] + 1.3, facing: Math.PI, name: 'Desmond', skin: 'tan', drinker: true },
     { x: kx + bar[0] + 2.4, z: kz + bar[1] + 1.25, facing: Math.PI + 0.5, name: 'Delroy', skin: 'dark', drinker: true },
   ];
-  return { planes, stations, barPeople, home, tills, shopPeople, islandAtms, altar, barSpot: { x: kx + bar[0] + 0.9, z: kz + bar[1] + 1.6 }, liner: { group: liner, phase: 'away', timer: 8, speed: 0 },
+  return { planes, stations, barPeople, home, doctor, track, beachFlag, swimmers, islandRoad, junglePalms, tills, shopPeople, islandAtms, altar, barSpot: { x: kx + bar[0] + 0.9, z: kz + bar[1] + 1.6 }, liner: { group: liner, phase: 'away', timer: 8, speed: 0 },
     shuttle: { group: shuttle, plane: true, own: true, autopilot: true, camFar: 13, name: 'airliner', speed: 0, heading: 0, throttle: 1, takeoff: 0, engine: null, spinners: [], steerers: [] },
     clerk: { x: tx - 10.65, z: tz - 2.3, facing: 0, name: 'Gloria at check-in', special: true, say: 'Press E for a ticket. Or the red propeller plane and the blue jet are out on the apron, if you want to fly yourself.' } };
 }
@@ -786,7 +1047,7 @@ export function updatePlane(plane, input, dt, halfMap) {
   let ended = null;
   if (position.y <= ground) {
     if (wet) ended = 'ditch';
-    else if (airborne && sinking < -11) ended = 'crash';      // came down far too hard
+    else if (airborne && (sinking < -11 || (ground > 4 && plane.speed > 30 && plane.pitch < 0.05))) ended = 'crash'; // came down far too hard, or flew into a hillside
     position.y = ground;
     plane.vy = 0;
   }

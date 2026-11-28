@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { pushOut, floorAt } from './world.js';
+import { pushOut, floorAt, waterDepthAt, sea, EAST_EDGE } from './world.js';
 
 const WHEEL_RADIUS = 0.42;
 const WHEELBASE = 3.4;        // distance between the front and back axles
@@ -137,8 +137,11 @@ export function updateTruck(truck, input, dt, halfMap) {
 
   const position = truck.group.position;
   const forwardX = Math.sin(truck.heading), forwardZ = Math.cos(truck.heading);
+  const wasX = position.x, wasZ = position.z;
   position.x += forwardX * truck.speed * dt;
   position.z += forwardZ * truck.speed * dt;
+  // Out on an island there is no kerb to stop it: it will not drive into the sea.
+  if (position.x > sea.x + 300 && waterDepthAt(position) > 0.3) { position.x = wasX; position.z = wasZ; truck.speed = 0; }
 
   // Bumping into things: check the front, middle and back of the truck, and
   // shove it out of anything solid. Hitting something kills most of the speed.
@@ -157,7 +160,7 @@ export function updateTruck(truck, input, dt, halfMap) {
   truck.bump = hit ? Math.abs(speed) : 0; // how fast it was going when it hit something (for dents)
 
   const limit = halfMap - 3;
-  position.x = THREE.MathUtils.clamp(position.x, -limit, limit);
+  position.x = THREE.MathUtils.clamp(position.x, -limit, EAST_EDGE); // (the world runs on east, out to Jamaica)
   position.z = THREE.MathUtils.clamp(position.z, -limit, limit);
   position.y += (floorAt(position) - position.y) * Math.min(1, 12 * dt); // up and down kerbs
 
