@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { pushOut, floorAt, waterDepthAt, seaBedAt } from './world.js';
+import { pushOut, floorAt, waterDepthAt, seaBedAt, EAST_EDGE } from './world.js';
 
 const WALK_SPEED = 2.4;
 const SPRINT_SPEED = 6.5;
@@ -355,7 +355,7 @@ export function updatePlayer(player, input, cameraYaw, dt, halfMap) {
 
   // Stay on the map.
   const limit = halfMap - 1;
-  group.position.x = THREE.MathUtils.clamp(group.position.x, -limit, limit);
+  group.position.x = THREE.MathUtils.clamp(group.position.x, -limit, EAST_EDGE);
   group.position.z = THREE.MathUtils.clamp(group.position.z, -limit, limit);
   pushOut(group.position, 0.35, true); // can't walk through walls (but can go in the lake)
 

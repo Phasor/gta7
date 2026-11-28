@@ -28,7 +28,8 @@ export function pushOut(position, radius, canSwim = false) {
   // NPCs, animals and the truck stay out of the lake: anything of theirs that
   // strays past the bank is put back on it. The jetty is the exception.
   // ...and out of the sea.
-  if (sea.active && !canSwim && position.x > sea.x - radius) position.x = sea.x - radius;
+  // (islanders stay on their island: only people near the mainland shore are kept out of the sea)
+  if (sea.active && !canSwim && position.x > sea.x - radius && position.x < sea.x + 300) position.x = sea.x - radius;
 
   if (water.active && !canSwim) {
     const dx = position.x - water.x, dz = position.z - water.z, dist = Math.hypot(dx, dz) || 1;
@@ -42,6 +43,9 @@ export function pushOut(position, radius, canSwim = false) {
     }
   }
 }
+
+// How far east anyone can go: the open sea runs a long way out, to the island of Jamaica.
+export const EAST_EDGE = 3440;
 
 // The sea, if there is one: everything beyond x is water. docks are piers you can walk out on.
 export const sea = { active: false, x: 0, docks: [] };

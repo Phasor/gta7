@@ -13,6 +13,7 @@ import { pushOut, floorAt, addObstacle, waterDepthAt } from './world.js';
 import { GANGS, POSTS } from './gangs.js';
 import { sfx } from './sound.js';
 import { FIGHTERS } from './boxing.js';
+import { onJamaica } from './airport.js';
 
 const FOLDER = `${import.meta.env.BASE_URL}models/people/`;
 
@@ -114,6 +115,44 @@ function recolour(material, degrees) {
   return copy;
 }
 
+// A copy of a material with the skin made darker: 'dark' or 'tan'. Clothes are left as they are.
+const SKIN = { dark: [0.4, 0.36, 0.34], tan: [0.72, 0.64, 0.56] };
+function reskin(material, tone) {
+  const image = material.map?.image;
+  if (!image || !SKIN[tone]) return material;
+  const cacheKey = `${material.uuid}:skin:${tone}`;
+  if (recoloured.has(cacheKey)) return recoloured.get(cacheKey);
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0);
+  const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height), d = pixels.data, [r, g, b] = SKIN[tone];
+  for (let i = 0; i < d.length; i += 4) {
+    const high = Math.max(d[i], d[i + 1], d[i + 2]), low = Math.min(d[i], d[i + 1], d[i + 2]);
+    // Skin is the warm, light part of the picture: more red than green, more green than blue.
+    if (high < 70 || high - low < 18 || !(d[i] > d[i + 1] && d[i + 1] >= d[i + 2])) continue;
+    d[i] *= r; d[i + 1] *= g; d[i + 2] *= b;
+  }
+  ctx.putImageData(pixels, 0, 0);
+  const map = new THREE.CanvasTexture(canvas);
+  Object.assign(map, { flipY: material.map.flipY, colorSpace: material.map.colorSpace, wrapS: material.map.wrapS, wrapT: material.map.wrapT });
+  const copy = material.clone();
+  copy.map = map;
+  recoloured.set(cacheKey, copy);
+  return copy;
+}
+// The crowd are darker-skinned while they are on Jamaica, and as they were on the mainland.
+function setSkin(npc, island) {
+  if (!!npc.island === island) return;
+  npc.island = island;
+  npc.model.traverse((part) => {
+    if (!part.isMesh) return;
+    part.userData.mainland ??= part.material;
+    part.material = island ? reskin(part.userData.mainland, npc.tone) : part.userData.mainland;
+  });
+}
+
 async function loadKind(loader, kind) {
   const [body, idle, walk, run] = await Promise.all(
     ['', '_idle', '_walk', '_run'].map((part) => loader.loadAsync(`${FOLDER}${kind}${part}.glb`))
@@ -181,7 +220,13 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
       const model = cloneSkinned(base.scene);
       if (cashierSpot.wear) addHeadwear(model, cashierSpot.wear); // a hat or hair that nobody else has
       if (cashierSpot.uniform) addUniform(model); // the police desk officer
-      else model.traverse((part) => { if (part.isMesh) part.material = recolour(part.material, cashierSpot.dye || (cashierSpot.prisoner ? 'prison' : cashierSpot.lifeguard ? 'lifeguard' : 330)); });
+      else model.traverse((part) => { if (part.isMesh) part.material = recolour(part.material, cashierSpot.dye || (cashierSpot.prisoner ? 'prison' : cashierSpot.lifeguard ? 'lifeguard' : cashierSpot.drinker ? [40, 150, 300][(cashierSpot.x | 0) % 3] : 330)); });
+      if (cashierSpot.skin) model.traverse((part) => { if (part.isMesh) part.material = reskin(part.material, cashierSpot.skin); });
+      if (cashierSpot.drinker) { // a bottle in the right hand
+        const bottle = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.03, 0.22, 10), new THREE.MeshStandardMaterial({ color: 0x5a3414, roughness: 0.25 }));
+        bottle.position.set(0, 0.1, 0.05);
+        model.getObjectByName('RightHand')?.add(bottle);
+      }
       const group = new THREE.Group();
       group.position.set(cashierSpot.x, cashierSpot.y ?? 0, cashierSpot.z); // (y: for people who stand upstairs)
       group.position.y = floorAt(group.position);
@@ -266,7 +311,7 @@ export function createNpcs(scene, halfMap, testSpot, testKind, cashierSpots, off
         clean: arm.slice(0, 2).map((part) => ({ bone: part, rotation: part.quaternion.clone() })),
         home: person.home ? new THREE.Vector3(person.home[0], 0, person.home[1]) : null,
         target: new THREE.Vector3(), pace: 0, strikeTime: 0, struck: false, still: false,
-        stream: !!person.stream, name: person.name, chatter: 4 + Math.random() * 25,
+        stream: !!person.stream, name: person.name, chatter: 4 + Math.random() * 25, tone: i % 3 ? 'dark' : 'tan',
       };
       if (person.fighter !== undefined) { // a boxer: gloves on, and he stays in his corner
         npc.fighter = person.fighter;
@@ -590,6 +635,15 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     // A gun in the shop: his hands go up.
     const scared = npcs.threat && cashier.meek && !held && Math.hypot(dx, dz) < 7 && Math.abs(playerPosition.y - cashier.group.position.y) < 2;
     cashier.handsUp += ((scared ? 1 : 0) - cashier.handsUp) * Math.min(1, 4 * dt);
+    if (cashier.spot?.drinker && !held) { // now and then, a swig from the bottle
+      cashier.sip = Math.max(0, (cashier.sip || 0) - dt);
+      const beat = Math.sin(performance.now() * 0.0007 + cashier.home.x * 3), lift = Math.max(cashier.sip > 0 ? Math.sin(Math.min(1, cashier.sip / 2.4) * Math.PI) : 0, Math.max(0, beat - 0.82) / 0.18);
+      cashier.drink = (cashier.drink || 0) + (lift - (cashier.drink || 0)) * Math.min(1, 6 * dt);
+      const side = axis.set(1, 0, 0).applyQuaternion(cashier.group.quaternion);
+      turnBoneBy(cashier.cb.armR, swing.setFromAxisAngle(side, -0.7 * cashier.drink));
+      turnBoneBy(cashier.cb.foreR, swing.setFromAxisAngle(side, -1.75 * cashier.drink));
+      turnBoneBy(cashier.cb.head, swing.setFromAxisAngle(side, -0.25 * cashier.drink));
+    }
     if (cashier.handsUp > 0.01) {
       const front = axis.set(0, 0, 1).applyQuaternion(cashier.group.quaternion), h = cashier.handsUp;
       turnBoneBy(cashier.cb.armL, swing.setFromAxisAngle(front, 1.9 * h));
@@ -652,7 +706,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     // Passers-by say something now and then when he is close, and cry out at the sight of a gun.
     npc.chatter -= dt;
     if (!npc.gang && npc.fighter === undefined && playerDistance < 7 && npc.chatter <= 0 && npcs.quiet <= 0 && (npc.state === 'idle' || npc.state === 'walk')) {
-      speak(npc, pick(npcs.threat ? SCARED : AMBIENT));
+      speak(npc, pick(npcs.threat ? SCARED : npc.lane?.island ? ISLAND : AMBIENT));
       npc.chatter = 18 + Math.random() * 30;
       npcs.quiet = 3.5;
     }    let pace = 0;       // 0 standing, 1 walking, 2 running
@@ -714,14 +768,25 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
       const distance = Math.hypot(dx, dz);
       if (distance < 0.5 || npc.timer <= 0) {
         npc.state = 'idle';
-        npc.timer = Math.random() < 0.6 ? 0 : 1.5 + Math.random() * 4; // most of the time they keep walking
+        npc.timer = npc.lane?.area ? (Math.random() < 0.3 ? 0.3 : 2 + Math.random() * 9) : Math.random() < 0.6 ? 0 : 1.5 + Math.random() * 4; // on the pavements most keep walking; islanders stop and stand about
         if (npc.nextLane) { npc.lane = npc.nextLane; npc.nextLane = null; }
       } else {
         const beforeX = position.x, beforeZ = position.z;
-        position.x += dx / distance * WALK_SPEED * dt;
-        position.z += dz / distance * WALK_SPEED * dt;
+        if (npc.lane?.area) {
+          // An islander ambles: the path bends one way and then the other, and nobody walks at quite the same speed.
+          npc.seed ??= Math.random() * 100;
+          const bend = Math.sin(performance.now() * 0.0005 * (0.6 + (npc.seed % 1)) + npc.seed) * Math.min(0.9, distance / 6);
+          const way = Math.atan2(dx, dz) + bend, speed = WALK_SPEED * (0.7 + (npc.seed % 7) / 12);
+          position.x += Math.sin(way) * speed * dt;
+          position.z += Math.cos(way) * speed * dt;
+          heading = way;
+          if (!onJamaica(position.x, position.z, 0.95)) { position.x = beforeX; position.z = beforeZ; npc.timer = 0; } // never into the sea
+        } else {
+          position.x += dx / distance * WALK_SPEED * dt;
+          position.z += dz / distance * WALK_SPEED * dt;
+          heading = Math.atan2(dx, dz);
+        }
         pushOut(position, 0.35);
-        heading = Math.atan2(dx, dz);
         pace = 1;
         // Not getting anywhere? Something solid is in the way. Rather than walk on the spot
         // against it, they turn round and go another way.
@@ -805,6 +870,10 @@ const LANES = [
   { along: 'z', at: 620.3, from: -54, to: -11.5, wide: 0.4 }, { along: 'z', at: 627.4, from: -54, to: -11.5, wide: 0.3 }, // (kept clear of the lamp posts and signs)
   { along: 'z', at: 620.3, from: 2.5, to: 33, wide: 0.4 }, { along: 'z', at: 627.4, from: 2.5, to: 33, wide: 0.3 },
 ];
+// On Jamaica: the street through the town, and two paths by the airstrip and the houses there.
+// (On Jamaica nobody keeps to a line: they wander anywhere on the island. See ISLAND below.)
+const ISLAND_AREA = { island: true, area: true };
+const HANGOUTS = [[3180, -22], [3148, -55], [3090, -55], [3220, -55], [3232, -42], [3204, -12], [2702, -27], [2745, -22], [2830, -108], [2880, -112], [2790, -110], [2760, -5]];
 const LANE_ODDS = [0, 0, 0, 0, 1, 1, 1, 1, 2, 3, 4, 5]; // most people are on the main road
 const FAR = 92, GONE = 112;   // how far out people are put, and how far away they are taken off again
 const MOST_DRAWN = 14;        // no more than this many are brought into view ahead of him
@@ -828,14 +897,20 @@ function leaveCrowd(npc) {
 // only behind the camera, or so far ahead that they are a speck.
 function joinCrowd(npc, view) {
   for (let attempt = 0; attempt < 6; attempt++) {
-    const lane = LANES[LANE_ODDS[(Math.random() * LANE_ODDS.length) | 0]];
-    const off = Math.abs((lane.along === 'x' ? view.z : view.x) - lane.at);
+    const lane = view.x > 2300 ? ISLAND_AREA : LANES[LANE_ODDS[(Math.random() * LANE_ODDS.length) | 0]];
+    if (lane.area) { // on Jamaica: anywhere on the island, most of them in and around the town and the airstrip
+      const angle = Math.random() * Math.PI * 2, far = 16 + Math.random() * (FAR - 16);
+      spot.set(view.x + Math.cos(angle) * far, 0, view.z + Math.sin(angle) * far);
+      if (!onJamaica(spot.x, spot.z)) continue;
+      pushOut(spot, 0.5);
+    }
+    const off = lane.area ? 0 : Math.abs((lane.along === 'x' ? view.z : view.x) - lane.at);
     if (off > FAR) continue;
     const reach = Math.sqrt(FAR * FAR - off * off);
-    const t = (lane.along === 'x' ? view.x : view.z) + (Math.random() * 2 - 1) * reach;
+    const t = lane.area ? 0 : (lane.along === 'x' ? view.x : view.z) + (Math.random() * 2 - 1) * reach;
     if (t < lane.from || t > lane.to) continue;
     const width = lane.wide ?? 0.8;
-    if (lane.along === 'x') spot.set(t, 0, lane.at + (Math.random() - 0.5) * width); else spot.set(lane.at + (Math.random() - 0.5) * width, 0, t);
+    if (lane.area) { /* already placed */ } else if (lane.along === 'x') spot.set(t, 0, lane.at + (Math.random() - 0.5) * width); else spot.set(lane.at + (Math.random() - 0.5) * width, 0, t);
     const distance = Math.hypot(spot.x - view.x, spot.z - view.z);
     // Never where he would see them appear: either out of sight and fairly close, or a speck in the
     // distance ahead. And only so many in front of him at once, so the game never has a crowd to draw.
@@ -843,6 +918,7 @@ function joinCrowd(npc, view) {
     if (seen && view.drawn >= MOST_DRAWN) continue;
     if (npc.first ? distance < 5 : distance < 16 || (seen ? distance < 74 : distance > 56)) continue;
     if (seen) view.drawn++;
+    setSkin(npc, !!lane.island);
     // Stand them up fresh: on their feet, full health, limbs straight.
     npc.tilt.rotation.set(0, 0, 0);
     npc.tilt.position.y = 0;
@@ -850,19 +926,34 @@ function joinCrowd(npc, view) {
     Object.assign(npc, { health: HEALTH, state: 'idle', timer: Math.random() * 2, fall: 0, away: false, first: false, lane, nextLane: null,
       dir: Math.random() < 0.5 ? -1 : 1, stuck: 0, blocked: 0, talkTime: 0, getUp: false });
     npc.group.position.copy(spot);
-    npc.group.rotation.y = lane.along === 'x' ? npc.dir * Math.PI / 2 : (npc.dir > 0 ? 0 : Math.PI);
+    npc.group.rotation.y = lane.area ? Math.random() * Math.PI * 2 : lane.along === 'x' ? npc.dir * Math.PI / 2 : (npc.dir > 0 ? 0 : Math.PI);
     return;
   }
 }
 // Walk on along the pavement: usually the same way, sometimes back, now and then across the road.
 function stroll(npc, straightBack = false) {
   const lane = npc.lane, position = npc.group.position;
+  if (lane.area) { // an islander: off in any direction, to anywhere that is dry land
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const angle = Math.random() * Math.PI * 2, far = 3 + Math.random() * 22;
+      npc.target.set(position.x + Math.cos(angle) * far, 0, position.z + Math.sin(angle) * far);
+      if (attempt === 0 && Math.random() < 0.45) { // drawn to wherever people gather, if one is near: the market, the bar, the church, the street, the airstrip
+        const near = HANGOUTS.filter(([hx, hz]) => Math.hypot(hx - position.x, hz - position.z) < 75);
+        if (near.length) { const [hx, hz] = near[(Math.random() * near.length) | 0]; npc.target.set(hx + (Math.random() - 0.5) * 12, 0, hz + (Math.random() - 0.5) * 12); }
+      }
+      if (onJamaica(npc.target.x, npc.target.z)) break;
+      npc.target.copy(position);
+    }
+    npc.state = 'walk';
+    npc.timer = 30;
+    return;
+  }
   if (!straightBack && Math.random() < 0.2) npc.dir = -npc.dir;
   const here = lane.along === 'x' ? position.x : position.z;
   let t = here + npc.dir * (10 + Math.random() * 28);
   if (t < lane.from + 1 || t > lane.to - 1) { npc.dir = -npc.dir; t = THREE.MathUtils.clamp(here + npc.dir * 14, lane.from + 1, lane.to - 1); }
   let across = lane;
-  if (!straightBack && lane.along === 'x' && Math.random() < 0.12) { // cross to the other pavement
+  if (!straightBack && (lane === LANES[0] || lane === LANES[1]) && Math.random() < 0.12) { // cross to the other pavement
     across = LANES[lane === LANES[0] ? 1 : 0];
     npc.nextLane = across;
     t = here + npc.dir * 3;
@@ -885,6 +976,7 @@ const pick = (lines) => lines[(Math.random() * lines.length) | 0];
 const AMBIENT = ['Hot one today, huh?', 'Nice hat.', 'You seen the size of the gators in that lake?', 'Morning.', 'Excuse me.', 'I love this town.', 'Rent went up again.',
   'Did you hear about the fight club?', 'I could go for a cold beer.', 'Watch out for the Sharks round here.', 'My feet are killing me.', 'Is that the guy from the penthouse?',
   'Lost fifty at the casino last night.', 'Somebody stole my cousin\'s car.', 'Beach is lovely this time of day.', 'Hey.', 'Fish are biting off the pier, I hear.', 'Too many cops about lately.'];
+const ISLAND = ['Wah gwaan?', 'Everyting irie, mon.', 'One love.', 'Respect, bredda.', 'Bless up.', 'Ya mon.', 'No problem, mon.', 'Mi deh yah.', 'Walk good.', 'Big up yuhself.', 'Soon come.', 'Yuh try di jerk chicken yet?', 'Di mountains dem look sweet today.', 'Welcome to yard!', 'Likkle more.', 'Irie.'];
 const SCARED = ['He\'s got a gun!', 'Don\'t shoot!', 'Whoa, whoa, easy!', 'Somebody call the police!', 'Please, I have kids!', 'Put that thing away!'];
 const ANGRY = ['What is WRONG with you?!', 'Oh, you want some?!', 'Come here!', 'You picked the wrong one, pal!', 'That\'s it!'];
 // The nearest living person in front of him, close enough to speak to.
@@ -918,7 +1010,7 @@ const PLACES = [
   [['hospital', 'doctor', 'hurt', 'sick'], 'Miami General is on the main road. Big red cross on it.'],
   [['car', 'taxi', 'truck', 'drive', 'ride'], 'Plenty of cars parked about. Not that I am suggesting anything.'],
 ];
-export function replyTo(who, said) {
+export function replyTo(who, said, friends = []) {
   const text = said.toLowerCase();
   who.talkTime = 7;
   const rude = has(text, ['stupid', 'idiot', 'ugly', 'hate you', 'shut up', 'dumb', 'loser', 'fat', 'moron', 'jerk', 'fool', 'trash', 'clown', 'suck', 'f+u+c+k', 'sh+i+t', 'b+i+t+c+h', 'ass(hole)?( |$)', 'kill you', 'punch you', 'fight me', 'your mom', 'your mum']);
@@ -928,10 +1020,44 @@ export function replyTo(who, said) {
     return { text: pick(['Move along, sir.', 'Keep your nose clean.', 'Nothing to see here.', 'Stay out of trouble.']) };
   }
   if (who.spot?.special) return { text: who.spot.say || 'Press E if you have business with me.' };
+  const yard = who.lane?.island || who.spot?.skin; // an islander answers the island way
+  if (yard) {
+    if (has(text, ['stupid', 'idiot', 'ugly', 'hate you', 'shut up', 'dumb', 'loser', 'moron', 'fool', 'clown'])) return who.cashier ? { text: 'Cho! Mind yuh manners, mon.' } : { text: pick(['A wah yuh a seh?!', 'Yuh a look trouble, bwoy?', 'Cho! Come yah!']), angry: true };
+    if (has(text, ['friend', 'buddy', 'pals?( |$)', 'bredda', 'bredren'])) {
+      if (!who.name) return { text: 'Mi a work, mon. Later.' };
+      if (friends.includes(who.name)) return { text: 'Wi a bredren already! Call mi any time.' };
+      if (who.saidNo) return { text: 'Mi seh no already, mon.' };
+      if (Math.random() < (who.friendly ? 0.92 : 0.5)) return { text: pick(['Ya mon! Bredren fi life. Tek mi number.', 'Yes I! Wi a friend now.', 'Irie. Call mi any time.']), friend: true };
+      who.saidNo = true;
+      return { text: pick(['Nah, mon.', 'Mi nuh know yuh so.', 'Mi have nuff friend already.']) };
+    }
+    if (has(text, ['hi', 'hello', 'hey', 'yo( |$)', 'sup', 'wah gwaan', 'whats up', "what's up"])) return { text: pick(['Wah gwaan!', 'Yes I! Everyting good?', 'Hail up, bredda.', 'Bless.']) };
+    if (has(text, ['how are you', 'how r u', 'you ok', 'you good', 'how you doing'])) return { text: pick(['Mi deh yah, yuh know.', 'Everyting irie.', 'Mi good, give thanks.', 'Nuh worry yuhself. Mi alright.']) };
+    if (has(text, ['your name', 'who are you', 'ur name'])) return { text: who.name ? 'Dem call mi ' + who.name + '. An yuh?' : 'Mi just a work yah so.' };
+    if (has(text, ['thank', 'thx', 'cheers'])) return { text: pick(['Respect.', 'No problem, mon.', 'Bless up.']) };
+    if (has(text, ['bye', 'goodbye', 'see you', 'later'])) { who.talkTime = 1; return { text: pick(['Likkle more.', 'Walk good.', 'Inna di morrows.']) }; }
+    if (has(text, ['money', 'cash', 'bucks', 'give me', 'gimme', 'lend'])) return { text: pick(['Mi bruk, mon.', 'Money nuh grow pon tree.', 'Go ask Winston a di bar.']) };
+    if (has(text, ['bar', 'beer', 'drink'])) return { text: 'Di Irie Beach Bar deh pon di west side, by di water. Winston will sort yuh out.' };
+    if (has(text, ['town', 'kingston', 'market', 'food', 'eat', 'chicken', 'church'])) return { text: 'Kingston deh pon di south side. Market, church, an di best jerk chicken.' };
+    if (has(text, ['plane', 'airport', 'fly', 'ticket', 'home', 'miami', 'leave'])) return { text: 'Coconut Pete sell ticket by di airstrip, up north-west.' };
+    if (has(text, ['mountain', 'hill'])) return { text: 'Di Blue Mountains, east side. Sweetest coffee inna di world grow up deh.' };
+    if (has(text, ['love', 'nice', 'cool', 'beautiful', 'great', 'like'])) return { text: pick(['Give thanks!', 'Yuh too kind.', 'Nuff respect.']) };
+    if (text.includes('?')) return { text: pick(['Mi nuh know, mon.', 'A good question dat.', 'Could be. Who fi seh?']) };
+    return { text: pick(['Ya mon.', 'Seen.', 'A so it go.', 'True ting.', 'Irie.', 'Zeen.']) };
+  }
   if (who.spot?.lifeguard) return { text: who.flagLine || 'Check the flag before you go in.' };
   if (who.gang) return { text: pick(['Get off our turf.', 'You talking to ME?', 'Walk away while you still can.', 'Wrong corner, friend.']) };
   if (who.spot?.prisoner) return { text: pick(['I didn\'t do it.', 'Got a cigarette?', 'Get me out of here, man.', 'The food in here is terrible.']) };
   if (rude) return who.cashier ? { text: 'There is no need for that. Buy something or leave.' } : { text: pick(['WHAT did you just say to me?!', 'Say that again. I dare you.', 'Oh, it is ON.']), angry: true };
+  // Asking to be friends. They only are if they say yes; a drink bought for them helps a lot.
+  if (has(text, ['friend', 'buddy', 'mates?( |$)', 'pals?( |$)', 'bff', 'amigo'])) {
+    if (!who.name) return { text: 'I am working. Maybe another time.' };
+    if (friends.includes(who.name)) return { text: 'We are already friends! Call me any time.' };
+    if (who.saidNo) return { text: 'I already said no.' };
+    if (Math.random() < (who.friendly ? 0.92 : 0.5)) return { text: pick(['Yes! Friends. Here is my number.', 'Sure, why not. Call me some time.', 'Yeah, alright. Friends.', 'I would like that. Put my number in your phone.']), friend: true };
+    who.saidNo = true;
+    return { text: pick(['No.', 'Uh... no thanks.', 'I have enough friends.', 'I do not really know you.']) };
+  }
   // Asking the way comes first, so "hello, where is the police station" gets directions and not just "hello".
   if (has(text, ['where', 'how do i', 'direction', 'find', 'way to'])) for (const [words, answer] of PLACES) if (has(text, words)) return { text: answer };
   if (has(text, ['hi', 'hello', 'hey', 'yo( |$)', 'sup', 'howdy', 'hola', 'good morning', 'good evening', 'whats up', 'what\'s up'])) return { text: pick(['Hey there!', 'Hello! Lovely day.', 'Oh, hi.', 'Hey, how is it going?', 'Hola!']) };

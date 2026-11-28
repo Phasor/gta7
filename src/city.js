@@ -775,9 +775,9 @@ function crossStreet(scene, kit, x, northEnd, southEnd) {
 
 // A cash machine standing on the pavement. facing: 0 if its screen faces +Z, Math.PI for -Z.
 // Returns where to stand to use it.
-function addAtm(scene, x, z, facing) {
+export function addAtm(scene, x, z, facing, y = 0) {
   const atm = new THREE.Group();
-  atm.position.set(x, 0.05, z);
+  atm.position.set(x, y + 0.05, z);
   atm.rotation.y = facing;
   const plain = (color, roughness = 0.5, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness, ...extra });
   const body = plain(0x1c3f6e, 0.45, { metalness: 0.3 }), steel = plain(0xb9bcbe, 0.35, { metalness: 0.6 }), dark = plain(0x17181a, 0.6);
@@ -796,7 +796,7 @@ function addAtm(scene, x, z, facing) {
   block(atm, new THREE.MeshBasicMaterial({ color: 0x4fe07a }), 0.04, 0.02, 0.03, 0.31, 1.2, 0.305);
   block(atm, dark, 0.44, 0.05, 0.03, 0, 0.82, 0.305);                                                      // where the cash comes out
   scene.add(atm);
-  addObstacle(x - 0.45, x + 0.45, z - 0.4, z + 0.4, 2.2);
+  addObstacle(x - 0.45, x + 0.45, z - 0.4, z + 0.4, y + 2.2);
   return { x: x + Math.sin(facing) * 0.95, z: z + Math.cos(facing) * 0.95 };
 }
 
@@ -816,7 +816,7 @@ export function createCity(scene, startX) {
   clearings[41].set(middle - length / 2, NEAR_EDGE - 46.2, middle + length / 2, FAR_EDGE + 46.2);
 
   // The welcome sign as you drive in.
-  for (const pz of [-12.2, -17.8]) { block(scene, kit.metal, 0.3, 5.2, 0.3, startX - 292, 2.6, pz); addObstacle(startX - 292.2, startX - 21.8, pz - 0.2, pz + 0.2, 5.5); }
+  for (const pz of [-12.2, -17.8]) { block(scene, kit.metal, 0.3, 5.2, 0.3, startX - 292, 2.6, pz); addObstacle(startX - 292.2, startX - 291.8, pz - 0.2, pz + 0.2, 5.5); }
   block(scene, new THREE.MeshBasicMaterial({ map: label('WELCOME TO MIAMI', 'THE SUNSHINE CAPITAL', '#f2659a', '#fff8e8', 1024, 256) }), 0.2, 2.2, 7.4, startX - 292, 4.3, -15);
 
   const X = (i) => startX + 10 + i * 52; // five plots down each side of the street

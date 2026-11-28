@@ -28,6 +28,8 @@ import { createSeaLife, updateSeaLife } from './sealife.js';
 import { createBank, setVaultDoor, VAULT_PEOPLE, portrait } from './bank.js';
 import { createDogs, updateDogs, findDogHit, dogNear, hurtDog, patDog } from './dogs.js';
 import { createTraffic, updateTraffic } from './traffic.js';
+import { createMap, updateMap, toggleMap } from './map.js';
+import { createAirport, updateAirport, updatePlane, resetPlane } from './airport.js';
 import { createMechanic, createBarber, HAIRCUTS, makeHair, makeHat } from './brewst.js';
 import { rayToObstacle, ceilingAt, roomLimit, waterDepthAt, seaBedAt } from './world.js';
 import { createGun, updateGun, fireGun, createDisplayGun, setWeapon, emitSmoke, emitBloodMist } from './gun.js';
@@ -173,17 +175,18 @@ const WEAPONS = {
 };
 const saved = (() => { try { return JSON.parse(localStorage.getItem('gta7-save')) || {}; } catch { return {}; } })();
 let money = saved.money ?? 1500;   // the cash in his pocket: he loses it if he dies
+let jmoney = saved.jmoney ?? 0; // Jamaican dollars in his pocket, for spending on the island
 let bank = saved.bank ?? 0;       // what he has paid in at a cash machine: that is safe
 const owned = new Set(saved.owned || []);
 if (new URLSearchParams(location.search).has('gun')) owned.add('pistol'); // test views start armed
 owned.add('camo'); // his own special rifle: nobody sells it and nobody else has one. Press 7 to carry it.
-const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, bank, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests, compDay, job, hair: hairKey })); } catch { /* no storage */ } };
+const persist = () => { try { localStorage.setItem('gta7-save', JSON.stringify({ money, bank, jmoney, owned: [...owned], weapon: gun.kind, bag, stats, clock: hourNow, day, arrests, compDay, job, hair: hairKey, friends })); } catch { /* no storage */ } };
 
 const overlay = (css) => { const el = document.createElement('div'); el.style.cssText = `position:fixed;pointer-events:none;font-family:system-ui,sans-serif;${css}`; document.body.appendChild(el); return el; };
 const moneyEl = overlay('right:18px;top:14px;font-weight:bold;font-size:24px;color:#d8f0c0;background:rgba(30,45,25,0.7);padding:6px 14px;border-radius:8px');
 const toastEl = overlay('display:none;left:50%;top:14%;transform:translateX(-50%);font-size:18px;color:#f3e9d2;background:rgba(40,30,20,0.85);padding:10px 18px;border-radius:8px;max-width:80%;text-align:center');
 const shopEl = overlay('display:none;left:50%;top:50%;transform:translate(-50%,-50%);font-size:17px;color:#f3e9d2;background:rgba(28,34,22,0.94);padding:18px 26px;border-radius:12px;border:2px solid #f3e6c0;min-width:420px');
-const showMoney = () => (moneyEl.innerHTML = `G$ ${money.toLocaleString('en-US')}<span style="font-size:14px;font-weight:normal;opacity:0.85"> &nbsp;cash &nbsp;·&nbsp; bank G$ ${bank.toLocaleString('en-US')}</span>`);
+const showMoney = () => (moneyEl.innerHTML = `G$ ${money.toLocaleString('en-US')}<span style="font-size:14px;font-weight:normal;opacity:0.85"> &nbsp;cash &nbsp;·&nbsp; bank G$ ${bank.toLocaleString('en-US')}${jmoney ? ` &nbsp;·&nbsp; J$ ${Math.round(jmoney).toLocaleString('en-US')}` : ''}</span>`);
 showMoney();
 let toastTimer = 0;
 function toast(text) {
@@ -280,13 +283,14 @@ showBag();
 
 let martOpen = false;
 function drawMart() {
+  const cost = (price) => (till.jm ? jd(price) : `G$ ${price}`);
   const rows = till.items.map((item, i) =>
     `<div style="display:flex;gap:14px;padding:7px 0;border-top:1px solid rgba(243,230,192,0.25)">
        <b style="width:26px">${i + 1}</b><span style="flex:1"><b>${item.name}</b><br><small>${item.blurb}</small></span>
-       <b>${item.limit && bag[item.key] >= item.limit ? 'GOT ONE' : gun.equipped ? 'FREE' : `G$ ${item.price}`}</b></div>`).join('');
+       <b>${item.limit && bag[item.key] >= item.limit ? 'GOT ONE' : gun.equipped ? 'FREE' : cost(item.price)}</b></div>`).join('');
   shopEl.innerHTML = `<div style="font-size:22px;font-weight:bold;margin-bottom:4px">${till.title}</div>
-    <div style="margin-bottom:10px">"${till.greeting}" &nbsp;·&nbsp; You have <b>G$ ${money.toLocaleString('en-US')}</b></div>${rows}
-    <div style="margin-top:12px;opacity:0.8">Press 1 to ${till.items.length} to buy &nbsp;·&nbsp; E to leave</div>`;
+    <div style="margin-bottom:10px">"${till.greeting}" &nbsp;·&nbsp; You have <b>${till.jm ? jd(jmoney) : gs(money)}</b></div>${rows}
+    <div style="margin-top:12px;opacity:0.8">Press 1 to ${till.items.length} to buy &nbsp;·&nbsp; E to leave${till.jm ? '<br><small>Jamaican dollars only. The cash machine on Main Street changes money.</small>' : ''}</div>`;
 }
 function setMart(open) {
   martOpen = !!open;
@@ -299,12 +303,12 @@ function buyMart(index) {
   if (!item) return;
   if (item.limit && bag[item.key] >= item.limit) return toast(`You already have a ${item.name.toLowerCase()}.`);
   const free = gun.equipped; // with a gun in your hand, everything is on the house
-  if (!free && money < item.price) return sfx('error'), toast(`Not enough Gator Bucks: that costs G$ ${item.price}.`);
+  const cost = till.jm ? jd(item.price) : `G$ ${item.price}`;
+  if (!free && (till.jm ? jmoney : money) < item.price) return sfx('error'), toast(till.jm ? `That is ${cost}, and you have ${jd(jmoney)}. The cash machine on Main Street changes Gator Bucks.` : `Not enough Gator Bucks: that costs ${cost}.`);
   sfx('buy');
-  if (!free) money -= item.price;
-  bag[item.key] += item.amount;
-  toast(free ? `"Take it! It's free, just don't shoot!" The cashier hands you the ${item.name.toLowerCase()}.`
-    : `You pay G$ ${item.price} and the cashier hands you the ${item.name.toLowerCase()}.`);
+  if (!free) { if (till.jm) jmoney -= item.price; else money -= item.price; }
+  if (item.use) item.use(); else bag[item.key] += item.amount;
+  if (!item.use) toast(free ? `"Take it! It's free, just don't shoot!" The cashier hands you the ${item.name.toLowerCase()}.` : `You pay ${cost} and the cashier hands you the ${item.name.toLowerCase()}.`);
   showMoney(); showBag(); persist(); drawMart();
 }
 
@@ -469,7 +473,7 @@ function eat() {
   showBag(); persist();
 }
 // In front of the cashier in Sunny's Mart, or the one in the beer shop: says which.
-const atMartCounter = () => (near(22.7, -22.2, 1.7) ? 'mart' : near(beerShop.userData.counter.x, beerShop.userData.counter.z, 1.6) ? 'beer' : null);
+const atMartCounter = () => (near(22.7, -22.2, 1.7) ? 'mart' : near(beerShop.userData.counter.x, beerShop.userData.counter.z, 1.6) ? 'beer' : islandTill());
 
 // --- The gym and training -----------------------------------------------------------
 // Iron Gator Gym is on the near side of the road, just past the petrol station.
@@ -603,7 +607,8 @@ function updateDaylight(dt) {
 
 // Sleeping: at night, the bed in his house skips straight to 7 in the morning.
 const atBed = () => (near(9.2, -27.3, 2.1) && player.group.position.x > 7.1 && player.group.position.z < -24.1) // the old house on Palm Ave
-  || (player.group.position.y > city.home.top - 1 && near(city.home.bed.x, city.home.bed.z, 1.9));           // or the penthouse
+  || (player.group.position.y > city.home.top - 1 && near(city.home.bed.x, city.home.bed.z, 1.9))            // or the penthouse
+  || near(airport.home.bed.x, airport.home.bed.z, 2.0);                                                       // or his hut on Jamaica
 let sleeping = false;
 function trySleep() {
   if (sleeping) return;
@@ -789,11 +794,13 @@ function hurtPlayer(amount) {
     if (boating) { setEngine(boating, false); boating.speed = 0; boating = null; }
     const bill = money; // everything in his pockets is gone. What is in the bank is safe.
     money = 0;
+    jmoney = 0;
     showMoney();
     health = 100;
     showHealth();
     downed = false;
-    player.group.position.copy(city.home.street);
+    // He comes round at whichever home is nearer: outside his hut if he was on or near Jamaica, outside Aqua Tower otherwise.
+    player.group.position.copy(player.group.position.x > 2200 ? airport.home.door : city.home.street);
     fadeEl.style.opacity = 0;
     persist();
     toast((deathCause ? deathCause + ' ' : '') + (bill ? `You died and lost the G$ ${bill.toLocaleString('en-US')} you were carrying. ${bank ? `Your G$ ${bank.toLocaleString('en-US')} in the bank is safe.` : 'Next time, put your money in a cash machine first.'}` : 'You died, but you had no cash on you to lose.'));
@@ -1551,7 +1558,8 @@ function sayIt() {
   speak(me, text, 4);
   setTimeout(() => { // they take a moment, then answer
     if (who.state === 'dead' || who.dead > 0 || who.away) return;
-    const answer = replyTo(who, text);
+    const answer = replyTo(who, text, friends);
+    if (answer.friend) addFriend(who.name);
     speak(who, answer.text, 4.5);
     if (answer.gift) { money += answer.gift; showMoney(); sfx('coin'); persist(); }
     if (answer.angry) provokeNpc(who);
@@ -1583,7 +1591,7 @@ function updateTalk(dt) {
     setTimeout(() => {
       for (let frame = 0; frame < Number(testView.get('sim')); frame++) step(1 / 30);
       const p = player.group.position;
-      console.log(`TEST sim: cam y ${camera.position.y.toFixed(1)} at ${p.x.toFixed(0)},${p.y.toFixed(1)},${p.z.toFixed(0)} traffic ${traffic.filter((car) => car.active).length} dents ${truck.dents || 0} health ${Math.round(health)} stars ${stars} resisting ${resisting} cash ${money} downed ${downed} trouble ${!!seaTrouble} flag ${flagShown} | ${toastEl.textContent}`);
+      console.log(`TEST sim: cam y ${camera.position.y.toFixed(1)} at ${p.x.toFixed(0)},${p.y.toFixed(1)},${p.z.toFixed(0)} trip ${trip ? trip.time.toFixed(0) : 'no'} plane ${driving && truck.plane ? `speed ${truck.speed.toFixed(0)} alt ${truck.group.position.y.toFixed(0)}` : 'no'} liner ${airport.liner.phase} traffic ${traffic.filter((car) => car.active).length} dents ${truck.dents || 0} health ${Math.round(health)} stars ${stars} resisting ${resisting} cash ${money} downed ${downed} trouble ${!!seaTrouble} flag ${flagShown} | ${toastEl.textContent}`);
     }, 0);
   }
   if (chatOpen) { // while he is typing, nothing else happens, and they wait to hear it
@@ -1631,11 +1639,11 @@ function updateBeach(dt) {
   lifeguard ??= (npcs.cashiers || []).find((one) => one.spot?.lifeguard) || null;
   if (lifeguard) lifeguard.flagLine = `${flag.name} today: ${flag.note}.${flag.risk ? ' If you go in anyway, I will do my best. No promises.' : ''}`;
   const here = player.group.position;
-  if (here.x > seaParts.shoreX - 38 && flagToldDay !== key && !driving) { // arriving at the beach, or the flag being changed while he is there
+  if (here.x > seaParts.shoreX - 38 && here.x < seaParts.shoreX + 450 && flagToldDay !== key && !driving) { // arriving at the beach, or the flag being changed while he is there
     flagToldDay = key;
     toast(`${flag.name} on the beach now: ${flag.note}.`);
   }
-  const inSea = !driving && !boating && !downed && jailed <= 0 && here.x > seaParts.shoreX && waterDepthAt(here) > 0.9;
+  const inSea = !driving && !boating && !downed && jailed <= 0 && here.x > seaParts.shoreX && here.x < seaParts.shoreX + 450 && waterDepthAt(here) > 0.9; // (only off the mainland beach, where the lifeguard is)
   if (!seaTrouble) {
     swimTime = inSea ? swimTime + dt : 0;
     if (inSea && flag.risk && (testView.has('drown') || (swimTime > 3 && Math.random() < flag.risk * dt))) { // it goes wrong
@@ -1939,6 +1947,10 @@ function repairCar() {
 let smokeTick = 0;
 function updateRoads(dt) {
   if (!npcs.view) return;
+  if (player.group.position.x > -400 && player.group.position.z > -300) updateAirport(airport, dt);
+  if (ticketOpen && !ticketDesk()) setTickets(false);
+  if (testView.has('ticket') && !updateRoads.flew && player.bones && ticketDesk()) { updateRoads.flew = true; setTickets(true); if (testView.get('ticket') !== 'menu') ticketKey(`Digit${testView.get('ticket')}`); } // ?ticket=1 buys the first one
+  if (testView.has('plane') && !updateRoads.flew && player.bones) { updateRoads.flew = true; truck = airport.planes[Number(testView.get('plane')) || 0]; driving = true; player.group.visible = false; truck.heading = Number(testView.get('head') ?? 0); if (testView.has('onrunway')) truck.group.position.set(260, 0.07, 175); } // ?plane=0 starts in one
   const here = player.group.position, onFoot = !driving && !boating;
   // What traffic has to stop for: him, every other car, and anybody walking in the road.
   const blockers = onFoot ? [{ x: here.x, z: here.z, r: 0.7 }] : [];
@@ -2007,11 +2019,311 @@ function updateRoads(dt) {
   }
 }
 function roadPrompts() {
+  if (trip) { usePrompt.textContent = trip.tour ? 'Sightseeing over Miami. Sit back and look out of the window.' : `Flying to ${trip.to.name}. Sit back.`; usePrompt.style.display = 'block'; return; }
+  if (fxOpen && !islandAtm()) setFx(false);
+  if (islandAtm() && !fxOpen) { usePrompt.textContent = 'Press E to use the cash machine (it changes money)'; usePrompt.style.display = 'block'; return; }
+  if (atAltar() && !chatOpen) { usePrompt.textContent = 'Press E to kneel at the altar for a quiet moment'; usePrompt.style.display = 'block'; return; }
+  if (atIrieBar() && !chatOpen) { usePrompt.textContent = `Press E to buy a round for everybody (${jd(ROUND_PRICE)})`; usePrompt.style.display = 'block'; return; }
+  if (ticketDesk() && !ticketOpen && !chatOpen) { usePrompt.textContent = 'Press E to buy a plane ticket'; usePrompt.style.display = 'block'; return; }
+  if (driving && truck.plane) { // how to fly, while he is doing it
+    const fast = truck.speed >= truck.takeoff, up = truck.group.position.y > 1;
+    usePrompt.textContent = up ? 'Shift climbs · C descends · A/D turn · S slows down (not too slow!) · land gently, then Space to brake' : fast ? 'Fast enough: hold Shift to take off' : 'Hold W for full throttle · A/D steer · Space brakes · F gets out when stopped';
+    usePrompt.style.display = 'block';
+    return;
+  }
   if (shopOpen || martOpen || casinoOpen || atmOpen || boxOpen || barberOpen || chatOpen || trim) return;
   const car = mechanicJob();
   if (car) { usePrompt.textContent = car.dents ? `Press E: Mick fixes ${car.dents} dent${car.dents > 1 ? 's' : ''} for G$ ${car.dents * DENT_PRICE}` : 'Fix-It Garage: no dents on this one'; usePrompt.style.display = 'block'; }
   else if (atBarber()) { usePrompt.textContent = 'Press E for a haircut'; usePrompt.style.display = 'block'; }
   else if (!driving && !boating && traffic.some((one) => one.active && one.speed < 3.5 && near(one.group.position.x, one.group.position.z, 3.4))) { usePrompt.textContent = 'Press F to pull the driver out and take the car'; usePrompt.style.display = 'block'; }
+}
+
+const gameMap = createMap();
+// Miami Airport, out on the grass behind the far-side towers, with two planes to fly.
+const airport = createAirport(scene);
+
+// --- Plane tickets ---------------------------------------------------------------------------------
+// The check-in desk at Miami Airport, and the ticket huts on Jamaica and at the Palm Ave airfield,
+// sell seats on the yellow airliner. Buy one and it flies you there.
+const FARES = { 'miami-key': 60, 'miami-palm': 20, 'key-palm': 70 }, TOUR_FARE = 15;
+const fare = (a, b) => FARES[`${a.key}-${b.key}`] ?? FARES[`${b.key}-${a.key}`];
+let ticketOpen = false, trip = null;
+const afterFade = (then) => (testView.has('ticket') ? then() : setTimeout(then, 900)); // (straight away when testing)
+// Anywhere along the front of the check-in desks counts, and anywhere round a ticket hut (even behind it).
+const ticketDesk = () => {
+  if (driving || boating || trip) return null;
+  const p = player.group.position;
+  return airport.stations.find((one) => Math.abs(p.y - one.arrive.y) < 2 && (one.key === 'miami'
+    ? p.x > one.desk.x - 6.5 && p.x < one.desk.x + 6.5 && p.z > one.desk.z - 1.5 && p.z < one.desk.z + 3.2
+    : Math.abs(p.x - one.desk.x) < 3.2 && p.z > one.desk.z - 4.2 && p.z < one.desk.z + 2.2)) || null;
+};
+const ticketChoices = (from) => [...airport.stations.filter((one) => one !== from).map((to) => ({ to, price: fare(from, to), name: to.name })),
+  ...(from.key === 'miami' ? [{ tour: true, to: from, price: TOUR_FARE, name: 'Sightseeing flight over Miami' }] : [])];
+function setTickets(open) {
+  ticketOpen = open;
+  shopEl.style.display = open ? 'block' : 'none';
+  if (!open) return;
+  const from = ticketDesk(), blurbs = { key: 'The island, far out to sea. Beaches, jungle and the Blue Mountains', palm: 'The grass strip behind the houses on Palm Ave', miami: 'The big airport, by the towers' };
+  shopEl.innerHTML = `<div style="font-size:22px;font-weight:bold;margin-bottom:4px">Gator Air tickets</div>
+    <div style="margin-bottom:10px">"Where to?" &nbsp;·&nbsp; You are at <b>${from.name}</b> &nbsp;·&nbsp; You have <b>G$ ${money.toLocaleString('en-US')}</b></div>` +
+    ticketChoices(from).map((choice, i) => `<div style="display:flex;gap:14px;padding:7px 0;border-top:1px solid rgba(243,230,192,0.25)"><b style="width:26px">${i + 1}</b>
+      <span style="flex:1"><b>${choice.name}</b><br><small>${choice.tour ? 'A loop over the city and the beach, and back here' : blurbs[choice.to.key]}</small></span><b>G$ ${choice.price}</b></div>`).join('') +
+    '<div style="margin-top:12px;opacity:0.8">Press a number to buy and board &nbsp;·&nbsp; E to leave</div>';
+}
+function ticketKey(code) {
+  const from = ticketDesk(), choice = from && ticketChoices(from)[['Digit1', 'Digit2', 'Digit3'].indexOf(code)];
+  if (!choice) return;
+  if (money < choice.price) return sfx('error'), toast(`That ticket is G$ ${choice.price}. You only have G$ ${money} on you.`);
+  money -= choice.price;
+  showMoney();
+  sfx('buy');
+  setTickets(false);
+  gun.equipped = false;
+  knifeOut = false;
+  fadeEl.style.opacity = 1;
+  afterFade(() => { // on board, doors closed
+    const plane = airport.shuttle, tour = !!choice.tour;
+    trip = { from, to: choice.to, tour, time: 0, length: tour ? 26 : Math.min(30, 13 + from.land.distanceTo(choice.to.land) / 85), last: from.land.clone() };
+    plane.group.position.copy(from.land);
+    plane.group.visible = true;
+    truck = plane;
+    driving = true;
+    player.group.visible = false;
+    setEngine(plane, true);
+    fadeEl.style.opacity = 0;
+    toast(tour ? 'Welcome aboard the Gator Air sightseeing flight.' : `Welcome aboard Gator Air to ${choice.to.name}.`);
+  });
+}
+const tripSpot = new THREE.Vector3();
+function flyTrip(dt) {
+  const plane = airport.shuttle, { from, to } = trip;
+  trip.time += dt;
+  const u = Math.min(1, trip.time / trip.length), e = u * u * (3 - 2 * u);
+  if (trip.tour) tripSpot.set(from.land.x + 300 + 400 * Math.sin(Math.PI * 2 * e - 0.85) , 0, from.land.z - 190 * (1 - Math.cos(Math.PI * 2 * e)));   // a big loop out over the city and the beach
+  else tripSpot.lerpVectors(from.land, to.land, e);
+  if (trip.tour) tripSpot.x += (from.land.x - (from.land.x + 300 + 400 * Math.sin(-0.85))) * (1 - Math.sin(Math.PI * u));                               // (starting and ending on the runway)
+  tripSpot.y = from.land.y + (to.land.y - from.land.y) * e + Math.sin(Math.PI * u) ** 0.75 * (trip.tour ? 95 : 120);
+  const dx = tripSpot.x - trip.last.x, dz = tripSpot.z - trip.last.z, flat = Math.hypot(dx, dz);
+  if (flat > 0.01) {
+    let turn = Math.atan2(dx, dz) - plane.heading;
+    turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+    plane.heading += turn * Math.min(1, 5 * dt);
+    plane.group.rotation.set(-Math.atan2(tripSpot.y - trip.last.y, flat) * 0.8, plane.heading, THREE.MathUtils.clamp(-turn * 6, -0.45, 0.45));
+  }
+  plane.speed = flat / Math.max(dt, 1e-4);
+  plane.group.position.copy(tripSpot);
+  trip.last.copy(tripSpot);
+  if (u < 1 || trip.ending) return;
+  trip.ending = true;                                        // down and stopped: off he gets
+  fadeEl.style.opacity = 1;
+  afterFade(() => {
+    driving = false;
+    setEngine(plane, false);
+    plane.speed = 0;
+    plane.group.visible = false;
+    truck = homeTruck;
+    player.group.visible = true;
+    player.group.position.copy(to.arrive);
+    player.group.rotation.y = to.facing;
+    cam.yaw = to.facing + Math.PI;
+    fadeEl.style.opacity = 0;
+    toast(trip.tour ? 'Back on the ground at Miami Airport. Thank you for flying Gator Air.' : `Welcome to ${to.name}. ${to.key === 'miami' ? '' : 'The ticket hut sells flights back.'}`);
+    trip = null;
+  });
+}
+
+// --- Jamaican dollars -----------------------------------------------------------------------------------
+// On the island everything is priced in Jamaican dollars (J$). The cash machines there change
+// Gator Bucks into them and back again: G$ 1 buys J$ 150.
+const JM_RATE = 150;
+const jd = (amount) => `J$ ${Math.round(amount).toLocaleString('en-US')}`;
+function islandTill() { // which island counter he is standing at, if any
+  return airport.tills.find((one) => Math.abs(player.group.position.y - 0.68) < 1.5 && near(one.x, one.z, 1.8))?.key || null;
+}
+const islandAtm = () => !driving && !boating && airport.islandAtms.some((one) => near(one.x, one.z, 1.4));
+let fxOpen = false, fxNote = '';
+function drawFx() {
+  const row = (key, name, detail) => `<div style="display:flex;gap:14px;padding:7px 0;border-top:1px solid rgba(243,230,192,0.25)"><b style="width:26px">${key}</b><span style="flex:1"><b>${name}</b></span><b>${detail}</b></div>`;
+  shopEl.innerHTML = `<div style="font-size:22px;font-weight:bold;margin-bottom:4px">Island Bank cash machine</div>
+    <div style="margin-bottom:4px">You have <b>${gs(money)}</b> and <b>${jd(jmoney)}</b> in cash &nbsp;·&nbsp; In the bank: <b>${gs(bank)}</b></div>
+    <div style="margin-bottom:10px;opacity:0.85"><small>Today's rate: G$ 1 = J$ ${JM_RATE}. Island shops and the bar only take Jamaican dollars.</small></div>
+    ${row(1, 'Change G$ 10', jd(10 * JM_RATE))}${row(2, 'Change G$ 100', jd(100 * JM_RATE))}${row(3, 'Change all your G$ cash', jd(money * JM_RATE))}
+    ${row(4, 'Change your J$ back to G$', gs(Math.floor(jmoney / JM_RATE)))}${row(5, 'Take G$ 100 out of your bank', '')}
+    <div style="min-height:22px;margin:8px 0;font-weight:bold;color:#ffe9a0">${fxNote}</div>
+    <div style="opacity:0.8">Press 1 to 5 &nbsp;·&nbsp; E to leave</div>`;
+}
+function setFx(open) {
+  fxOpen = open;
+  shopEl.style.display = open ? 'block' : 'none';
+  if (open) { fxNote = ''; sfx('click'); drawFx(); }
+}
+function fxKey(code) {
+  const choice = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'].indexOf(code);
+  const change = (amount) => { // G$ into J$
+    if (amount <= 0 || money < amount) { sfx('error'); fxNote = 'You do not have that much in Gator Bucks.'; return; }
+    money -= amount;
+    jmoney += amount * JM_RATE;
+    sfx('coin');
+    fxNote = `${gs(amount)} becomes ${jd(amount * JM_RATE)}.`;
+  };
+  if (choice === 0) change(10);
+  else if (choice === 1) change(100);
+  else if (choice === 2) change(money);
+  else if (choice === 3) {
+    const back = Math.floor(jmoney / JM_RATE);
+    if (!back) { sfx('error'); fxNote = 'Not enough Jamaican dollars to make one Gator Buck.'; } else { jmoney -= back * JM_RATE; money += back; sfx('coin'); fxNote = `You get ${gs(back)} back.`; }
+  } else if (choice === 4) {
+    const out = Math.min(100, bank);
+    if (!out) { sfx('error'); fxNote = 'Your bank account is empty.'; } else { bank -= out; money += out; sfx('coin'); fxNote = `Here is your ${gs(out)}.`; }
+  } else return;
+  showMoney(); persist(); drawFx();
+}
+// The island's counters: what each sells, in Jamaican dollars. Food and coffee are eaten on the spot.
+const heal = (amount, words) => () => { health = Math.min(100, health + amount); showHealth(); sfx('eat'); toast(words); };
+Object.assign(TILLS, {
+  grocery: { title: "Miss Lou's Grocery", greeting: 'Wah yuh need, darlin?', jm: true, items: [
+    { key: 'beer', name: 'Island lager', price: 450, amount: 1, blurb: 'A cold bottle. Press 5 to drink it' },
+    { key: 'snacks', name: 'Plantain chips', price: 300, amount: 1, blurb: 'Press 6 to eat them. Run faster for 30 seconds' },
+    { name: 'Beef patty', price: 400, blurb: 'Hot from the oven. Eaten on the spot: +25 health', use: heal(25, 'A hot beef patty. That is better.') },
+    { key: 'cigarettes', name: 'Pack of cigarettes', price: 1800, amount: 20, blurb: '20 in a pack. Press 4 to smoke one' },
+  ] },
+  coffee: { title: 'Blue Mountain Coffee', greeting: 'Best coffee inna di world. Yuh want a cup?', jm: true, items: [
+    { name: 'Cup of Blue Mountain coffee', price: 350, blurb: 'Drunk on the spot: run faster for a whole minute', use: () => { energy = 60; player.boost = 1.35; sfx('drink'); toast('Strong, sweet and black. You could run up the mountain.'); } },
+    { name: 'Slice of rum cake', price: 300, blurb: 'Eaten on the spot: +15 health', use: heal(15, 'Rich, dark and sticky. Lovely.') },
+    { name: 'Coconut water', price: 200, blurb: 'Straight from the nut: +10 health', use: heal(10, 'Cool and sweet.') },
+  ] },
+  jerk: { title: 'Jerk Chicken Shack', greeting: 'Hot, hotter or hottest?', jm: true, items: [
+    { name: 'Jerk chicken', price: 900, blurb: 'Smoky and fiery. Eaten on the spot: +50 health', use: heal(50, 'Your mouth is on fire. You feel wonderful.') },
+    { name: 'Festival dumplings', price: 300, blurb: 'Sweet fried dough: +15 health', use: heal(15, 'Sweet and crisp.') },
+    { name: 'Rice and peas', price: 500, blurb: 'A proper plateful: +30 health', use: heal(30, 'Just like somebody\'s grandmother makes it.') },
+  ] },
+});
+// The market stalls in Kingston. Everything is eaten or drunk on the spot.
+const boost = (seconds, words) => () => { energy = seconds; player.boost = 1.35; sfx('drink'); toast(words); };
+Object.assign(TILLS, {
+  stall0: { title: "Auntie Pearl's fruit", greeting: 'Sweet an ripe, darlin. Pick one.', jm: true, items: [
+    { name: 'Julie mango', price: 150, blurb: 'Dripping with juice: +8 health', use: heal(8, 'Juice runs down your chin.') },
+    { name: 'Hand of bananas', price: 100, blurb: '+6 health', use: heal(6, 'Small, sweet island bananas.') },
+    { name: 'Pineapple', price: 300, blurb: 'She cuts it up for you: +15 health', use: heal(15, 'Sharp and sweet.') },
+    { name: 'Soursop', price: 250, blurb: 'Creamy and strange: +12 health', use: heal(12, 'Like nothing you have tasted before.') },
+  ] },
+  stall1: { title: "Miss Icilda's ackee and saltfish", greeting: 'National dish, cook fresh dis mawnin.', jm: true, items: [
+    { name: 'Ackee and saltfish', price: 700, blurb: "Jamaica's national dish: +40 health", use: heal(40, 'Soft yellow ackee, salty fish, onion and pepper. You see why they are proud of it.') },
+    { name: 'Ackee and saltfish with fried dumpling', price: 900, blurb: 'The full breakfast: +55 health', use: heal(55, 'You mop the plate with the last dumpling.') },
+    { name: 'Roast breadfruit', price: 250, blurb: 'A thick warm slice: +12 health', use: heal(12, 'Smoky outside, soft inside.') },
+    { name: 'Callaloo', price: 200, blurb: 'Steamed greens: +10 health', use: heal(10, 'Good for you, and it tastes it.') },
+  ] },
+  stall2: { title: "Junior's cold drinks", greeting: 'Ice cold! Wah yuh a drink?', jm: true, items: [
+    { name: 'Coconut water', price: 200, blurb: 'He lops the top off with a machete: +10 health', use: heal(10, 'Cool and sweet, straight from the nut.') },
+    { name: 'Ginger beer', price: 250, blurb: 'Hot with ginger: run faster for 45 seconds', use: boost(45, 'It burns all the way down. You are wide awake.') },
+    { name: 'Sorrel', price: 250, blurb: 'Deep red and spiced: +12 health', use: heal(12, 'Sweet, sharp and spicy.') },
+    { name: 'Sky juice', price: 100, blurb: 'Shaved ice and syrup in a bag: +5 health', use: heal(5, 'Your teeth ache with the cold.') },
+  ] },
+  stall3: { title: "Captain Roy's fried fish", greeting: 'Caught dis mawnin. Fry it right now.', jm: true, items: [
+    { name: 'Fried fish and bammy', price: 800, blurb: 'Crisp snapper with cassava bread: +45 health', use: heal(45, 'Crisp skin, sweet flesh, and vinegar that makes your eyes water.') },
+    { name: 'Pepper shrimp', price: 500, blurb: 'Bright red and very hot: +25 health', use: heal(25, 'Your lips go numb.') },
+    { name: 'Fish tea', price: 300, blurb: 'A cup of thin, peppery soup: +15 health', use: heal(15, 'It is soup. Nobody knows why it is called tea.') },
+  ] },
+  stall4: { title: "Sister Joy's sweets", greeting: 'Sumting sweet fi yuh?', jm: true, items: [
+    { name: 'Gizzada', price: 200, blurb: 'A pinched tart of spiced coconut: +10 health', use: heal(10, 'Sticky and crunchy.') },
+    { name: 'Coconut drops', price: 150, blurb: 'Chunks of coconut in ginger toffee: +8 health', use: heal(8, 'You will be picking that out of your teeth all day.') },
+    { name: 'Tamarind balls', price: 150, blurb: 'Sweet, sour and peppery: run faster for 30 seconds', use: boost(30, 'Your whole face puckers. Then you want another.') },
+    { name: 'Grater cake', price: 200, blurb: 'Pink and white coconut candy: +10 health', use: heal(10, 'Pure sugar.') },
+  ] },
+  stall5: { title: "Uncle Vin's patties and bun", greeting: 'Hot patty! Bun an cheese!', jm: true, items: [
+    { name: 'Beef patty', price: 350, blurb: 'Flaky and fiery: +22 health', use: heal(22, 'You burn your mouth and do not care.') },
+    { name: 'Patty in coco bread', price: 500, blurb: 'A patty inside a soft bun: +32 health', use: heal(32, 'Bread inside pastry. Genius.') },
+    { name: 'Bun and cheese', price: 400, blurb: 'Spiced fruit bun with a slab of cheese: +25 health', use: heal(25, 'Sweet and salty at once.') },
+  ] },
+  rum: { title: 'Rum Shop', greeting: 'Sit down, tek a drink, slam a domino.', jm: true, items: [
+    { key: 'beer', name: 'Rum punch', price: 600, amount: 1, blurb: 'Goes in your bag. Press 5 to drink it (it counts as a beer)' },
+    { name: 'Ginger beer', price: 250, blurb: 'Run faster for 45 seconds', use: boost(45, 'Hot with ginger.') },
+    { name: 'Peanut punch', price: 350, blurb: 'Thick and sweet: +18 health', use: heal(18, 'A meal in a cup.') },
+  ] },
+});
+// The chapel: a quiet moment at the altar puts him right, once a day.
+let prayedDay = 0;
+const atAltar = () => !driving && !boating && near(airport.altar.x, airport.altar.z, 2.0) && player.group.position.x > 3000;
+function pray() {
+  if (prayedDay === day) return toast('You have had your quiet moment today. Come back tomorrow.');
+  prayedDay = day;
+  health = 100;
+  showHealth();
+  sfx('sleep');
+  toast('You kneel by the altar for a quiet moment. You get up feeling whole again. (Full health, once a day.)');
+}
+
+// --- The Irie Beach Bar on Jamaica: a round for everybody ------------------------------------------
+const ROUND_PRICE = 1200; // Jamaican dollars
+const atIrieBar = () => !driving && !boating && !trip && near(airport.barSpot.x, airport.barSpot.z, 2.6);
+function buyRound() {
+  if (jmoney < ROUND_PRICE) return sfx('error'), toast(`A round is ${jd(ROUND_PRICE)}, and you have ${jd(jmoney)}. Winston only takes Jamaican dollars: the cash machine by the airstrip changes money.`);
+  if (drinking > 0) return;
+  jmoney -= ROUND_PRICE;
+  showMoney();
+  sfx('buy');
+  const cheers = ['Cheers, mon!', 'Respect, bredda!', 'Big up yuhself!', 'Nuff respect!'];
+  (npcs.cashiers || []).filter((one) => one.spot?.drinker).forEach((one, i) => { // they raise their bottles and drink with him
+    one.sip = 2.4;
+    one.friendly = true;
+    setTimeout(() => speak(one, cheers[i % cheers.length], 4), 300 + i * 500);
+  });
+  bag.beer++;
+  drink(); // and so does he
+  toast('Winston lines up cold island lagers. Everybody drinks with you. (They like you now: try asking one to be your friend.)');
+}
+
+// --- The phone, and friends ---------------------------------------------------------------------------
+// Somebody is only a friend if you asked them (press T, and say something like "be my friend") and
+// they said yes. Friends go in the phone. Press P to take it out, and a number to ring one.
+const friends = (saved.friends || []).slice(0, 9);
+let phoneOpen = false, phoneNote = '';
+const giftDay = {};
+const phoneEl = overlay('display:none;right:26px;bottom:150px;width:250px;min-height:330px;box-sizing:border-box;background:#101216;border:3px solid #3a3f48;border-radius:26px;padding:16px 14px;color:#e6e8ea;font-size:14px;z-index:6;box-shadow:0 6px 20px rgba(0,0,0,0.6)');
+function addFriend(name) {
+  if (!name || friends.includes(name)) return;
+  if (friends.length >= 9) return toast('Your phone is full: nine friends is plenty.');
+  friends.push(name);
+  sfx('levelup');
+  persist();
+  toast(`${name} is now your friend. Press P for your phone to call them.`);
+}
+function drawPhone() {
+  const list = friends.length
+    ? friends.map((name, i) => `<div style="display:flex;gap:10px;padding:6px 4px;border-top:1px solid #2a2e36"><b style="width:18px;color:#5fc8f0">${i + 1}</b><span style="flex:1">${name}</span><span style="opacity:0.6">call</span></div>`).join('')
+    : '<div style="opacity:0.75;padding:10px 4px">No friends yet.<br><br>Face somebody, press <b>T</b> and ask: <i>"will you be my friend?"</i><br><br>They only go in here if they say yes.</div>';
+  phoneEl.innerHTML = `<div style="text-align:center;font-size:11px;opacity:0.6">Day ${day} · ${String(Math.floor(hourNow)).padStart(2, '0')}:${String(Math.floor(hourNow % 1 * 60)).padStart(2, '0')} · Bank G$ ${bank.toLocaleString('en-US')}</div>
+    <div style="font-size:18px;font-weight:bold;margin:8px 0 6px">Friends</div>${list}
+    <div style="min-height:70px;margin-top:10px;padding:8px;background:#1b1f27;border-radius:10px;color:#ffe9a0">${phoneNote}</div>
+    <div style="margin-top:8px;font-size:11px;opacity:0.6;text-align:center">${friends.length ? 'Press a number to call · ' : ''}P to put it away</div>`;
+}
+function setPhone(open) {
+  if (open && ((driving && truck.plane) || trip || jailed > 0 || chatOpen)) return;
+  phoneOpen = open;
+  phoneEl.style.display = open ? 'block' : 'none';
+  if (open) { phoneNote = ''; sfx('click'); drawPhone(); }
+}
+const PHONE_LINES = ['Hey! Good to hear from you.', 'I am at the beach. Come down some time.', 'Did you hear? Somebody cracked the vault at Gator Bank.', 'Stay away from the Sharks. Bad news.',
+  'Iron Vic is still unbeaten at the Fight Club, you know.', 'The fishing off the pier is good today.', 'Check the flag before you swim. I mean it.', 'You should fly out to Jamaica some time.',
+  'I am stuck at work. Call me later?', 'Lucky Palm took all my money again.', 'What are you up to? Nothing illegal, I hope.', 'Fix-It Garage did my car for ten bucks a dent. Bargain.'];
+function phoneKey(code) {
+  const name = friends[['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9'].indexOf(code)];
+  if (!name) return;
+  sfx('megaphone');
+  phoneNote = `Calling ${name}…`;
+  drawPhone();
+  setTimeout(() => {
+    if (!phoneOpen) return;
+    if (Math.random() < 0.12) phoneNote = `${name} does not pick up.`;
+    else if (giftDay[name] !== day && Math.random() < 0.3) { // a real friend helps out, once a day at most
+      giftDay[name] = day;
+      money += 20;
+      showMoney(); persist();
+      sfx('coin');
+      phoneNote = `<b>${name}:</b> "You sound broke. I am sending you G$ 20. Do not spend it all at the casino."`;
+    } else phoneNote = `<b>${name}:</b> "${PHONE_LINES[Math.floor(Math.random() * PHONE_LINES.length)]}"`;
+    drawPhone();
+  }, 1500);
 }
 
 // --- Sharp Cuts: haircuts ----------------------------------------------------------------------------
@@ -2109,7 +2421,14 @@ let wagesAt = -WAGE_WAIT;
 function useKey() {
   if (workout) return;
   if (jailed > 0) return payBail();
-  if (trim) return;
+  if (trim || trip) return;
+  if (phoneOpen) return setPhone(false);
+  if (fxOpen) return setFx(false);
+  if (islandAtm()) return setFx(true);
+  if (atAltar()) return pray();
+  if (atIrieBar()) return buyRound();
+  if (ticketOpen) return setTickets(false);
+  if (ticketDesk()) return setTickets(true);
   if (barberOpen) return setBarber(false);
   if (atBarber()) return setBarber(true);
   if (mechanicJob()) return repairCar();
@@ -2160,7 +2479,7 @@ if (new URLSearchParams(location.search).has('gator')) { // ?gator puts one on t
 const truckStart = (new URLSearchParams(location.search).get('truckat') || '677,-11.5,1.5708').split(',').map(Number); // ?truckat=x,z,heading
 const homeTruck = Object.assign(createTruck(scene, renderer, truckStart[0], truckStart[1], truckStart[2]), { name: 'truck', own: true });
 // Other people's cars, parked about the place. They drive like the truck, but taking one is theft.
-const vehicles = [homeTruck, ...createCars(scene, renderer)];
+const vehicles = [homeTruck, ...createCars(scene, renderer), ...airport.planes];
 // The patrol cars outside both police stations can be taken too.
 for (const station of [policeStation, miamiPD]) for (const { car, block } of station.userData.cars) {
   scene.attach(car); // lift it out of the station so it can drive away
@@ -2178,10 +2497,10 @@ const targets = () => {
 };
 let truck = homeTruck; // whichever of them he is driving, or drove last
 const nearVehicle = () => {
-  let best = null, nearest = 3.4;
+  let best = null, nearest = 1;
   for (const one of vehicles) {
     const distance = Math.hypot(player.group.position.x - one.group.position.x, player.group.position.z - one.group.position.z);
-    if (distance < nearest) { nearest = distance; best = one; }
+    if (distance / (one.reach || 3.4) < nearest) { nearest = distance / (one.reach || 3.4); best = one; } // (planes are bigger, so can be reached from further off)
   }
   return best;
 };
@@ -2189,6 +2508,7 @@ const speedo = document.getElementById('speed');
 let driving = false;
 function toggleDriving() {
   const here = player.group.position;
+  if (trip) return; // a passenger stays in his seat
   if (!driving && !boating) jackTraffic();                   // a car stopped in the road can be taken off its driver
   if (!driving && !boating) truck = nearVehicle() || truck; // the one he is standing beside
   const there = truck.group.position;
@@ -2279,7 +2599,10 @@ window.addEventListener('keydown', (e) => {
   if (!e.repeat) {
     const pick = { Digit1: 'pistol', Digit2: 'shotgun', Digit3: 'rifle' }[e.code];
     const martPick = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
-    if (barberOpen) barberKey(e.code);                                      // choosing a haircut
+    if (fxOpen) fxKey(e.code);                                              // changing money on the island
+    else if (phoneOpen) phoneKey(e.code);                                        // using the phone
+    else if (ticketOpen) ticketKey(e.code);                                      // choosing where to fly
+    else if (barberOpen) barberKey(e.code);                                      // choosing a haircut
     else if (boxOpen) boxKey(e.code);                                            // at the bookie's booth
     else if (atmOpen) atmKey(['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'].indexOf(e.code));   // using a cash machine
     else if (casinoOpen) casinoKey(e.code);                                 // playing in the casino
@@ -2293,6 +2616,8 @@ window.addEventListener('keydown', (e) => {
     else if (pick && owned.has(pick)) { setWeapon(gun, pick); gun.equipped = true; } // switching between guns he owns
     else if (e.code === 'Digit7') { setWeapon(gun, 'camo'); gun.equipped = true; toast('Your camo assault rifle. Ten rounds a burst, and nobody gets up again.'); }
     if (e.code === 'KeyK') toggleKnife(); // draw or put away the knife
+    if (e.code === 'KeyM') toggleMap(gameMap);
+    if (e.code === 'KeyP') setPhone(!phoneOpen);
     if (e.code === 'KeyX') startKick();
     if (e.code === 'KeyZ') startThrow();
     if (e.code === 'KeyQ') { // draw or put away the gun
@@ -2331,9 +2656,10 @@ const MOUSE_SENSITIVITY = 0.0025;
 // and ?gun, ?aim and ?fire to draw, aim and keep firing the gun.
 const testView = new URLSearchParams(location.search);
 // The game starts at home, in the penthouse, looking out of the front windows.
-player.group.position.copy(city.home.spawn);
-player.group.rotation.y = city.home.facing;
-cam.yaw = city.home.facing + Math.PI;
+// (He lives in a hut on Jamaica now. The penthouse in Miami is still his, and so is its bed.)
+player.group.position.copy(airport.home.spawn);
+player.group.rotation.y = airport.home.facing;
+cam.yaw = airport.home.facing + Math.PI;
 if (testView.has('at')) { // ?at=x,z starts the player somewhere else
   const [x, z, y = 0] = testView.get('at').split(',').map(Number); // (a third number is the height, for upstairs)
   player.group.position.set(x, y, z);
@@ -2385,10 +2711,10 @@ function updateCamera() {
   const rx = Math.cos(cam.yaw), rz = -Math.sin(cam.yaw); // camera right
 
   // Point the camera looks at: the character's upper back, nudged sideways.
-  const height = boating ? (boating.fishing ? 3.4 : 1.9) : driving ? 1.9 : cam.height - crouchDrop(player); // camera dips when crouching
+  const height = boating ? (boating.fishing ? 3.4 : 1.9) : driving ? (truck.plane ? 3.2 : 1.9) : cam.height - crouchDrop(player); // camera dips when crouching
   // Aiming pulls the camera in closer and further over the shoulder.
   const shoulder = driving || boating ? 0 : cam.shoulder + 0.2 * player.aim;
-  const distance = boating ? cam.distance * (boating.fishing ? 4.4 : 1.7) : driving ? cam.distance * 2.1 : cam.distance * (1 - 0.4 * player.aim); // further back to fit the truck in
+  const distance = boating ? cam.distance * (boating.fishing ? 4.4 : 1.7) : driving ? cam.distance * (truck.plane ? truck.camFar || 5.2 : 2.1) : cam.distance * (1 - 0.4 * player.aim); // further back to fit the truck in
   lookAt.set(p.x + rx * shoulder, p.y + height, p.z + rz * shoulder);
 
   const flat = Math.cos(cam.pitch) * distance;
@@ -2429,6 +2755,10 @@ const npcs = createNpcs(scene, MAP_SIZE / 2, testView.has('npc') ? new THREE.Vec
    policeStation.userData.officer,
    miamiPD.userData.officer, miamiPD.userData.guard, ...miamiPD.userData.prisoners, // Miami's desk officer, the cell guard, and the prisoners
    gatorBank.userData.teller, VAULT_PEOPLE.stranger, VAULT_PEOPLE.lenny, ...VAULT_PEOPLE.holders, // the bank teller, and the six people in the vault job
+   ...airport.barPeople, ...airport.shopPeople,    // (and the shopkeepers, the jerk chef and the pastor)
+   //                           // the barman and the regulars at the beach bar on Jamaica
+   airport.clerk, ...airport.stations.filter((one) => one.seller).map((one) => one.seller), // the people who sell plane tickets
+                                    // the check-in desk at the airport
    garage.mechanic, barberShop.barber,             // the mechanic and the barber on Brew St
    seaParts.guard.post,                            // the lifeguard on the beach
    fightClub.bookie,                               // the bookie at the Fight Club
@@ -2658,8 +2988,19 @@ function step(dt) {
       cam.yaw += turn * Math.min(1, 2 * dt);
     }
   } else if (driving) {
-    updateTruck(truck, { throttle: testView.has('drive') ? 1 : input.z, steer: -input.x, handbrake: input.jump }, dt, MAP_SIZE / 2);
-    player.group.position.copy(truck.group.position); // the rest of the world follows the truck
+    if (truck.autopilot) flyTrip(dt);
+    else if (truck.plane) {
+      // Flying: W and S work the throttle, A and D turn, Shift pulls the nose up, C pushes it down, Space brakes on the ground.
+      const ended = updatePlane(truck, { throttle: testView.has('plane') ? 1 : input.z, steer: -input.x, up: input.sprint || testView.has('climb'), down: input.crouch, handbrake: input.jump }, dt, MAP_SIZE / 2);
+      if (ended && !downed) {
+        const wreck = truck;
+        sfx('crash');
+        deathCause = ended === 'ditch' ? `You put the ${wreck.name} in the water.` : `You crashed the ${wreck.name}.`;
+        hurtPlayer(9999);
+        setTimeout(() => resetPlane(wreck), 1400); // a new one is wheeled out
+      }
+    } else updateTruck(truck, { throttle: testView.has('drive') ? 1 : input.z, steer: -input.x, handbrake: input.jump }, dt, MAP_SIZE / 2);
+    if (driving) player.group.position.copy(truck.group.position); // the rest of the world follows the truck (unless a flight has just let him off)
     // The camera swings round to stay behind the truck.
     if (Math.abs(truck.speed) > 1.5) {
       let turn = truck.heading + Math.PI - cam.yaw;
@@ -2667,7 +3008,7 @@ function step(dt) {
       cam.yaw += turn * Math.min(1, 2.5 * dt);
     }
     // Anyone in the way gets run over.
-    if (Math.abs(truck.speed) > 3) {
+    if (Math.abs(truck.speed) > 3 && !(truck.plane && truck.group.position.y > 1.5)) {
       for (const npc of npcs) {
         if (npc.state === 'dead') continue;
         const ahead = Math.sign(truck.speed) * 1.6;
@@ -2685,7 +3026,7 @@ function step(dt) {
     updatePlayer(player, input, cam.yaw, dt, MAP_SIZE / 2);
   }
   speedo.style.display = driving || boating ? 'block' : 'none';
-  if (driving || boating) speedo.textContent = `${Math.round(Math.abs((boating || truck).speed) * 2.237)} mph` + (driving && truck.dents ? ` · ${truck.dents} dent${truck.dents > 1 ? 's' : ''}` : '');
+  if (driving || boating) speedo.textContent = `${Math.round(Math.abs((boating || truck).speed) * 2.237)} mph` + (driving && truck.plane ? ` · ${Math.round(truck.group.position.y * 3.28)} ft · throttle ${Math.round(truck.throttle * 100)}%` : '') + (driving && truck.dents ? ` · ${truck.dents} dent${truck.dents > 1 ? 's' : ''}` : '');
   updateHouse(house, player.group.position, dt);
   updateIguanas(iguanas, player.group.position, dt);
   // Walking over a dead iguana picks it up.
@@ -2789,7 +3130,7 @@ function step(dt) {
   if (tipsy > 0) cam.yaw += Math.sin(time * 0.7) * 0.12 * Math.min(1, tipsy / 5) * dt; // the world drifts about
   if (energy > 0) { energy -= dt; if (energy <= 0) player.boost = 1; }
   if (testView.has('shop') && byAl && !shopOpen) setShop(true); // ?shop opens Big Al's menu straight away
-  usePrompt.textContent = canLand ? (boating.fishing ? 'Press F to leave the wheel' : 'Press F to get out') : byBoat ? (fishingBoatNear(seaParts, player.group.position) ? 'Press F to take the wheel' : jetSkiNear(seaParts, player.group.position) ? 'Press F to ride the jet ski' : 'Press F to take the boat out') : byTruck ? (besideCar.own ? 'Press F to drive your truck' : besideCar.stolen ? `Press F to drive the ${besideCar.name}` : `Press F to steal the ${besideCar.name}`)
+  usePrompt.textContent = canLand ? (boating.fishing ? 'Press F to leave the wheel' : 'Press F to get out') : byBoat ? (fishingBoatNear(seaParts, player.group.position) ? 'Press F to take the wheel' : jetSkiNear(seaParts, player.group.position) ? 'Press F to ride the jet ski' : 'Press F to take the boat out') : byTruck ? (besideCar.plane ? `Press F to fly the ${besideCar.name}` : besideCar.own ? 'Press F to drive your truck' : besideCar.stolen ? `Press F to drive the ${besideCar.name}` : `Press F to steal the ${besideCar.name}`)
     : byBed ? (isNight() ? 'Press E to sleep until morning' : 'You can sleep here once it gets dark (6 in the evening)') : gymSpot ? gymPrompt(gymSpot) : byAl ? 'Press E to buy from Big Al' : byMart ? 'Press E to buy from the cashier' : byCash ? 'Press E to use the cash machine' : 'Press E to open or close the fridge';
   usePrompt.style.display = ((byTruck && !boating) || byFridge || byBoat || canLand || byCash || byAl || byMart || gymSpot || byBed) && !shopOpen && !martOpen && !atmOpen ? 'block' : 'none';
   const fishPrompt = fishingState?.phase === 'bite' ? 'A BITE! Press E now!'
@@ -2814,6 +3155,13 @@ function step(dt) {
   updateBeach(dt);
   updateJob(dt);
   roadPrompts();
+  // The map: him, his truck, and whoever the vault job needs him to find next.
+  if (testView.has('map') && !gameMap.open) toggleMap(gameMap);
+  const marks = driving && truck === homeTruck ? [] : [{ x: homeTruck.group.position.x, z: homeTruck.group.position.z, colour: '#e0483a', name: 'Your truck' }];
+  if (job.stage === 0) marks.push({ ...VAULT_PEOPLE.stranger, colour: '#ffffff', name: 'A stranger' });
+  if (job.stage === 1) marks.push({ ...VAULT_PEOPLE.lenny, colour: '#ffe27a', name: 'Lenny' });
+  if (job.stage === 2) holders.forEach((person, i) => { if (!job.known[i]) marks.push({ ...person, colour: '#ffe27a', name: person.name }); });
+  updateMap(gameMap, { x: player.group.position.x, z: player.group.position.z, heading: driving ? truck.heading : boating ? boating.heading : player.group.rotation.y, marks });
   if (testView.has('dog') && !updateJob.dogShown && player.bones) { // ?dog=0,9 stands those two dogs in front of the camera, for checking how they look
     updateJob.dogShown = true;
     player.group.visible = false;
