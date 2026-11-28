@@ -555,7 +555,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     const position = cop.group.position;
     cop.group.visible = inSight(view, position);
     let pace = 0, heading = cop.post.facing;
-    if (police?.wanted) {
+    if (police?.wanted && Math.hypot(playerPosition.x - position.x, playerPosition.z - position.z) < 450) { // (only the police who are anywhere near: Miami's do not swim to Jamaica)
       const dx = playerPosition.x - position.x, dz = playerPosition.z - position.z, distance = Math.hypot(dx, dz) || 1;
       heading = Math.atan2(dx, dz);
       if (distance < 1.4 && police.canCatch) police.onArrest(cop);
@@ -742,7 +742,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     // Passers-by say something now and then when he is close, and cry out at the sight of a gun.
     npc.chatter -= dt;
     if (!npc.gang && npc.fighter === undefined && playerDistance < 7 && npc.chatter <= 0 && npcs.quiet <= 0 && (npc.state === 'idle' || npc.state === 'walk')) {
-      speak(npc, pick(npcs.threat ? SCARED : npc.lane?.island ? ISLAND : AMBIENT));
+      speak(npc, pick(npcs.threat ? SCARED : npc.lane?.island ? (position.z < -500 ? CUBAN : ISLAND) : AMBIENT));
       npc.chatter = 18 + Math.random() * 30;
       npcs.quiet = 3.5;
     }    let pace = 0;       // 0 standing, 1 walking, 2 running
@@ -791,6 +791,15 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
         } else {
           heading = npc.postFacing;
         }
+      }
+    } else if (npc.state === 'mug') {
+      // A mugger: runs up to him and stands there with the knife out.
+      heading = Math.atan2(toPlayerX, toPlayerZ);
+      if (playerDistance > 1.7) {
+        const stride = Math.min(RUN_SPEED * 1.15 * dt, playerDistance - 1.6);
+        position.x += toPlayerX / playerDistance * stride;
+        position.z += toPlayerZ / playerDistance * stride;
+        pace = 2;
       }
     } else if (npc.talkTime > 0 && (npc.state === 'idle' || npc.state === 'walk')) {
       // Being spoken to: they stop and face him.
@@ -894,6 +903,7 @@ export function updateNpcs(npcs, playerPosition, dt, onStrike, police, gangs) {
     for (const entry of npc.clean) entry.rotation.copy(entry.bone.quaternion);
     if (npc.state === 'strike') poseStrike(npc, playerPosition, Math.min(1, npc.strikeTime));
     if (npc.gang && npc.aiming) poseAim(npc, playerPosition);
+    if (npc.state === 'mug') poseAim(npc, playerPosition); // the knife, held out at him
     if (npc.choke > 0.01) poseChoked(npc, npc.choke, (npc.chokeTime || 0) / CHOKE_TIME);
   }
 }
@@ -909,7 +919,7 @@ const LANES = [
 // On Jamaica: the street through the town, and two paths by the airstrip and the houses there.
 // (On Jamaica nobody keeps to a line: they wander anywhere on the island. See ISLAND below.)
 const ISLAND_AREA = { island: true, area: true };
-const HANGOUTS = [[3180, -22], [3148, -55], [3090, -55], [3220, -55], [3232, -42], [3204, -12], [2702, -27], [2745, -22], [2830, -108], [2880, -112], [2790, -110], [2760, -5]];
+const HANGOUTS = [[2676, -904], [2684, -896], [2650, -918], [2700, -918], [2740, -900], [2751, -866], [2620, -918], [3180, -22], [3148, -55], [3090, -55], [3220, -55], [3232, -42], [3204, -12], [2702, -27], [2745, -22], [2830, -108], [2880, -112], [2790, -110], [2760, -5]];
 const LANE_ODDS = [0, 0, 0, 0, 1, 1, 1, 1, 2, 3, 4, 5]; // most people are on the main road
 const FAR = 92, GONE = 112;   // how far out people are put, and how far away they are taken off again
 const MOST_DRAWN = 14;        // no more than this many are brought into view ahead of him
@@ -1014,6 +1024,7 @@ const AMBIENT = ['Hot one today, huh?', 'Nice hat.', 'You seen the size of the g
   'Did you hear about the fight club?', 'I could go for a cold beer.', 'Watch out for the Sharks round here.', 'My feet are killing me.', 'Is that the guy from the penthouse?',
   'Lost fifty at the casino last night.', 'Somebody stole my cousin\'s car.', 'Beach is lovely this time of day.', 'Hey.', 'Fish are biting off the pier, I hear.', 'Too many cops about lately.'];
 const ISLAND = ['Wah gwaan?', 'Everyting irie, mon.', 'One love.', 'Respect, bredda.', 'Bless up.', 'Ya mon.', 'No problem, mon.', 'Mi deh yah.', 'Walk good.', 'Big up yuhself.', 'Soon come.', 'Yuh try di jerk chicken yet?', 'Di mountains dem look sweet today.', 'Welcome to yard!', 'Likkle more.', 'Irie.'];
+const CUBAN = ['¡Hola!', '¿Qué bolá?', 'Buenos días, amigo.', 'Bienvenido a Cuba.', '¡Qué calor!', 'You like the old cars, eh?', 'Best coffee in the world, at the plaza.', '¡Oye!', 'Tranquilo, tranquilo.', 'Dominoes tonight, you coming?', '¡Vamos!', 'Hasta luego.'];
 const SCARED = ['He\'s got a gun!', 'Don\'t shoot!', 'Whoa, whoa, easy!', 'Somebody call the police!', 'Please, I have kids!', 'Put that thing away!'];
 const ANGRY = ['What is WRONG with you?!', 'Oh, you want some?!', 'Come here!', 'You picked the wrong one, pal!', 'That\'s it!'];
 // The nearest living person in front of him, close enough to speak to.
@@ -1059,6 +1070,27 @@ export function replyTo(who, said, friends = []) {
   if (who.spot?.runner) return { text: pick(['See you on the track.', 'You will be looking at my back.', 'Good luck. You will need it.', 'Gold is mine.']) };
   if (who.spot?.swimmer) return { text: pick(['Di wata nice today!', 'Come in, mon, it warm!', 'Mind di flag, yuh hear?', 'Lovely day for a swim!']) };
   if (who.spot?.special) return { text: who.spot.say || 'Press E if you have business with me.' };
+  if (who.lane?.island && who.group.position.z < -500) { // on Cuba
+    if (has(text, ['stupid', 'idiot', 'ugly', 'hate you', 'shut up', 'dumb', 'loser', 'moron', 'fool', 'clown'])) return { text: pick(['¿Qué dijiste?! Say that again!', '¡Ven acá!', 'You want trouble, eh?']), angry: true };
+    if (has(text, ['friend', 'buddy', 'amigo', 'pals?( |$)'])) {
+      if (!who.name) return { text: 'Estoy trabajando. Later.' };
+      if (friends.includes(who.name)) return { text: 'We are already amigos! Call me.' };
+      if (who.saidNo) return { text: 'I said no, amigo.' };
+      if (Math.random() < 0.5) return { text: pick(['¡Claro! Amigos. Here is my number.', 'Sí, why not. Call me.']), friend: true };
+      who.saidNo = true;
+      return { text: pick(['No, gracias.', 'I do not know you.']) };
+    }
+    if (has(text, ['hi', 'hello', 'hey', 'hola', 'sup', 'whats up', "what's up"])) return { text: pick(['¡Hola! ¿Qué tal?', '¡Buenas!', '¿Qué bolá, asere?']) };
+    if (has(text, ['how are you', 'how r u', 'you ok', 'you good'])) return { text: pick(['Bien, bien. Y tú?', 'Aquí, en la lucha.', 'No me quejo.']) };
+    if (has(text, ['your name', 'who are you', 'ur name'])) return { text: who.name ? 'Me llamo ' + who.name + '. Mucho gusto.' : 'I just work here.' };
+    if (has(text, ['thank', 'gracias', 'thx'])) return { text: pick(['De nada.', 'No hay problema.']) };
+    if (has(text, ['bye', 'adios', 'see you', 'later'])) { who.talkTime = 1; return { text: pick(['Hasta luego.', 'Chao, chao.', 'Cuídate.']) }; }
+    if (has(text, ['bar', 'coffee', 'drink', 'food', 'eat', 'mojito'])) return { text: 'Bar La Plaza, in the square by the capitol. Ask for Ernesto.' };
+    if (has(text, ['plane', 'airport', 'fly', 'ticket', 'home', 'jamaica', 'miami', 'leave'])) return { text: 'Señora Reyes sells tickets, where the road meets the airstrip. East of town.' };
+    if (has(text, ['car', 'drive', 'classic'])) return { text: 'Beautiful, no? Sixty years old and still running. Do not touch.' };
+    if (text.includes('?')) return { text: pick(['No sé, amigo.', 'Quién sabe.', 'Good question.']) };
+    return { text: pick(['Sí, sí.', 'Claro.', 'Así es.', 'Vale.', 'Mmm. Bueno.']) };
+  }
   const yard = who.lane?.island || who.spot?.skin; // an islander answers the island way
   if (yard) {
     if (has(text, ['stupid', 'idiot', 'ugly', 'hate you', 'shut up', 'dumb', 'loser', 'moron', 'fool', 'clown'])) return who.cashier ? { text: 'Cho! Mind yuh manners, mon.' } : { text: pick(['A wah yuh a seh?!', 'Yuh a look trouble, bwoy?', 'Cho! Come yah!']), angry: true };
@@ -1086,6 +1118,7 @@ export function replyTo(who, said, friends = []) {
   }
   if (who.spot?.lifeguard) return { text: who.flagLine || 'Check the flag before you go in.' };
   if (who.gang) return { text: pick(['Get off our turf.', 'You talking to ME?', 'Walk away while you still can.', 'Wrong corner, friend.']) };
+  if (who.spot?.prisoner && who.spot.skin) return { text: pick(['Mi neva do nuttin, officer!', 'Yuh have a cigarette?', 'A wah dem lock yuh up for?', 'Move ova, dat a fi mi bench.', 'Di food inna yah terrible, mon.', 'Mi a get out tomorrow. Dem seh dat every day.']) };
   if (who.spot?.prisoner) return { text: pick(['I didn\'t do it.', 'Got a cigarette?', 'Get me out of here, man.', 'The food in here is terrible.']) };
   if (rude) return who.cashier ? { text: 'There is no need for that. Buy something or leave.' } : { text: pick(['WHAT did you just say to me?!', 'Say that again. I dare you.', 'Oh, it is ON.']), angry: true };
   // Asking to be friends. They only are if they say yes; a drink bought for them helps a lot.
@@ -1287,6 +1320,35 @@ function makeDeathPose(npc) {
 }
 
 // Make an NPC angry: they run at the player to hit him.
+// Put a knife in somebody's hand (or take it away again).
+export function armNpc(npc, armed) {
+  if (!npc.blade && armed) {
+    npc.blade = new THREE.Group();
+    const steel = new THREE.Mesh(new THREE.BoxGeometry(0.006, 0.17, 0.035), new THREE.MeshStandardMaterial({ color: 0xd4d8dc, roughness: 0.2, metalness: 0.9 }));
+    steel.position.y = 0.2;
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.1, 0.035), new THREE.MeshStandardMaterial({ color: 0x141516, roughness: 0.8 }));
+    grip.position.y = 0.07;
+    npc.blade.add(steel, grip);
+    npc.arm[2].add(npc.blade);
+  }
+  if (npc.blade) npc.blade.visible = armed;
+}
+// Somebody near him, on foot and minding their own business, who could turn mugger: the nearest between 8 and 40 metres off.
+export function pickMugger(npcs, position) {
+  let best = null, nearest = 40;
+  for (const npc of npcs) {
+    if (!npc.stream || npc.away || (npc.state !== 'idle' && npc.state !== 'walk') || npc.talkTime > 0) continue;
+    const distance = Math.hypot(npc.group.position.x - position.x, npc.group.position.z - position.z);
+    if (distance > 8 && distance < nearest && Math.abs(npc.group.position.y - position.y) < 3) { nearest = distance; best = npc; }
+  }
+  return best;
+}
+// Send somebody walking off again, as one of the crowd.
+export function dismissNpc(npc) {
+  if (npc.state === 'dead') return;
+  npc.state = 'idle';
+  npc.timer = 0;
+}
 export function provokeNpc(npc) {
   if (npc.state === 'dead' || npc.state === 'strike' || npc.officer) return; // (officers just arrest you)
   if (npc.gang) { npc.crew.alert = 25; return; } // hurt one and the whole gang turns on you

@@ -206,7 +206,8 @@ const UP = new THREE.Vector3(0, 1, 0);
 
 // Each frame: everything swims. `near`: only worked out while the player is at the beach or out at sea.
 // danger: true on a purple-flag day, when the sharks come in close to where people swim.
-export function updateSeaLife(sea, time, dt, playerPosition, alarm) {
+// prey: where the swimmer is, while he is in deep water (null otherwise). A shark that he comes near goes for him.
+export function updateSeaLife(sea, time, dt, playerPosition, alarm, prey = null) {
   const near = playerPosition.x > sea.shoreX - 120;
   sea.life.visible = near;
   if (!near) return;
@@ -242,8 +243,24 @@ export function updateSeaLife(sea, time, dt, playerPosition, alarm) {
     shark.z += (wantZ - shark.z) * Math.min(1, 0.25 * dt);
     const round = danger ? Math.min(shark.radius, 14) : shark.radius;
     const angle = shark.phase + time * shark.speed * (danger ? 1.6 : 1);
-    shark.group.position.set(shark.x + Math.cos(angle) * round, -0.82 + Math.sin(time * 0.35 + shark.phase) * 0.12, shark.z + Math.sin(angle) * round); // just deep enough that the fin cuts the surface
-    shark.group.rotation.y = Math.atan2(-Math.sin(angle), Math.cos(angle));
+    const cruiseX = shark.x + Math.cos(angle) * round, cruiseZ = shark.z + Math.sin(angle) * round, at = shark.group.position;
+    const scent = prey ? Math.hypot(prey.x - at.x, prey.z - at.z) : Infinity;
+    shark.hunting = scent < (shark.hunting ? 26 : 13);                      // it notices him at 13 metres, and gives up at 26
+    if (shark.hunting) {
+      // It turns and comes straight for him, faster than anybody can swim.
+      const stride = Math.min(scent, 6.5 * dt), dive = THREE.MathUtils.clamp(prey.y + 0.9, -9, -0.75);
+      if (scent > 0.6) { at.x += (prey.x - at.x) / scent * stride; at.z += (prey.z - at.z) / scent * stride; shark.group.rotation.y = Math.atan2(prey.x - at.x, prey.z - at.z); }
+      at.y += (dive - at.y) * Math.min(1, 2 * dt);
+    } else if (Math.hypot(cruiseX - at.x, cruiseZ - at.z) > 1.5 && shark.cruised) {
+      // Swimming back to its patrol.
+      const back = Math.hypot(cruiseX - at.x, cruiseZ - at.z), stride = Math.min(back, 5 * dt);
+      at.x += (cruiseX - at.x) / back * stride; at.z += (cruiseZ - at.z) / back * stride; at.y += (-0.82 - at.y) * Math.min(1, dt);
+      shark.group.rotation.y = Math.atan2(cruiseX - at.x, cruiseZ - at.z);
+    } else {
+      shark.cruised = true;
+      at.set(cruiseX, -0.82 + Math.sin(time * 0.35 + shark.phase) * 0.12, cruiseZ); // just deep enough that the fin cuts the surface
+      shark.group.rotation.y = Math.atan2(-Math.sin(angle), Math.cos(angle));
+    }
     shark.tail.rotation.y = Math.sin(time * 3.4 + shark.phase) * 0.45;
     shark.group.rotation.y += Math.sin(time * 3.4 + shark.phase + 1.2) * 0.07; // the whole body snakes a little as it swims
   }

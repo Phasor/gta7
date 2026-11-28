@@ -10,6 +10,7 @@ import { clearings, daylight } from './grass.js';
 import { block, canvasTexture, speckle, makeMaterials, addPalm } from './house.js';
 import { label } from './store.js';
 import { addAtm } from './city.js';
+import { makePatrolCar } from './policestation.js';
 
 const RUNWAY_Z = 175, RUNWAY_FROM = 200, RUNWAY_TO = 800, GROUND = 0.07;
 const plain = (color, roughness = 0.8, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness, ...extra });
@@ -248,8 +249,10 @@ function hillHeight(x, z) {
   return Math.max(0, height * level * shore);
 }
 // Is this place on the map on Jamaica, and not too near the water's edge?
+// (It also answers for any other island that has been added: see otherIslands.)
+export const otherIslands = [];
 export function onJamaica(x, z, shrink = 0.86) {
-  return onLand((x - JX) / shrink, (z - JZ) / shrink);
+  return onLand((x - JX) / shrink, (z - JZ) / shrink) || otherIslands.some((island) => island(x, z, shrink));
 }
 
 // --- The airport ------------------------------------------------------------------------------------
@@ -831,6 +834,60 @@ export function createAirport(scene) {
   shop(kx + 24, kz + 37.2, "MISS LOU'S GROCERY", 'PATTIES · COLD DRINKS · EVERYTHING', 0xf2c230, 'grocery', 'Miss Lou', [0xe0483a, 0xf2c230, 0x2fa85a, 0x3fa0e0, 0xf2f0e6, 0xff9a3a]);
   shop(kx + 40, kz + 37.2, 'BLUE MOUNTAIN COFFEE', 'FRESH ROASTED · RUM CAKE', 0x3f7a8a, 'coffee', 'Mr Clarke', [0x4a3220, 0x6b4a30, 0xf2f0e6, 0x8a5a2e, 0x2f2018]);
   islandAtms.push(addAtm(scene, kx + 51, kz + 40.3, 0, KEY), addAtm(scene, kx - 163.5, kz - 21, 0, KEY));
+  // Kingston Police Station: a small blue and white building on the south side of Main Street.
+  // The front half is the office, with a desk; the back half is two cells behind one long row of
+  // bars. The cells are shared: two prisoners in each, and anybody arrested on the island joins them.
+  const copX = kx + 34, copZ = kz + 58.5, copW = 14, copD = 10, copH = 3.2, navyPaint = plain(0x1c3f8a, 0.6), barSteel = plain(0x8f9396, 0.35, { metalness: 0.7 });
+  const copDoor = shell(copX, copZ, copW, copD, copH, plain(0xe9f0f6, 0.85), -1, 1.6);
+  gable(copX, copZ, copD + 1.2, copW + 0.8, KEY + copH, 1.6, zinc[0]);
+  block(scene, plain(0xb9b3a6, 0.9), copW - 0.4, 0.04, copD - 0.4, copX, KEY + 0.02, copZ).castShadow = false;
+  block(scene, navyPaint, copW + 0.06, 0.5, 0.06, copX, KEY + copH - 0.3, copDoor - 0.14);                // a navy band along the front
+  block(scene, sign('POLICE', 'JAMAICA CONSTABULARY · KINGSTON STATION', '#1c3f8a', '#ffffff', 1024, 224), 6.5, 1.3, 0.1, copX, KEY + copH + 0.6, copDoor - 0.2);
+  for (const side of [-1, 1]) { block(scene, new THREE.MeshBasicMaterial({ color: 0x3f7fff }), 0.2, 0.3, 0.2, copX + side * 1.3, KEY + 2.4, copDoor - 0.2); windowAt(copX + side * 4.2, KEY + 1.7, copDoor - 0.1, false, 0x1c3f8a); }
+  block(scene, lampGlow, 3, 0.06, 0.3, copX, KEY + copH - 0.05, copZ - 2);
+  // The office: a desk, a filing cabinet, a bench for people waiting, and a board of wanted posters.
+  block(scene, darkWood, 3.2, 1.0, 0.8, copX + 3.4, KEY + 0.5, copZ - 2.2);
+  block(scene, navyPaint, 3.3, 0.06, 0.9, copX + 3.4, KEY + 1.03, copZ - 2.2);
+  addObstacle(copX + 1.8, copX + 5.0, copZ - 2.6, copZ - 1.8, KEY + 1.2);
+  block(scene, plain(0x7f8a8c, 0.5, { metalness: 0.3 }), 0.9, 1.4, 0.6, copX + 6.2, KEY + 0.7, copZ - 0.2);
+  block(scene, darkWood, 2.6, 0.45, 0.5, copX - 5.2, KEY + 0.23, copZ - 4.3);
+  addObstacle(copX - 6.5, copX - 3.9, copZ - 4.6, copZ - 4.0, KEY + 0.6);
+  for (let poster = 0; poster < 3; poster++) block(scene, sign('WANTED', poster === 1 ? 'J$ 50,000 REWARD' : 'ASK AT THE DESK', '#f2ecd8', '#1b1c1e', 128, 160), 0.04, 0.62, 0.5, copX - copW / 2 + 0.24, KEY + 1.9, copZ - 3.2 + poster * 0.65);
+  // The cells: bars right across, a wall between the two, and two bunks, a bucket and a bench in each.
+  const barsZ = copZ + 0.6;
+  const cellBars = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.022, 0.022, copH - 0.25, 6), barSteel, 68);
+  const barAt = new THREE.Matrix4();
+  for (let bar = 0; bar < 68; bar++) cellBars.setMatrixAt(bar, barAt.makeTranslation(copX - 6.75 + bar * 0.2015, KEY + (copH - 0.25) / 2, barsZ));
+  scene.add(cellBars);
+  for (const y of [0.1, 1.3, copH - 0.3]) block(scene, barSteel, copW - 0.4, 0.07, 0.07, copX, KEY + y, barsZ);
+  addObstacle(copX - 6.9, copX + 6.9, barsZ - 0.1, barsZ + 0.1, KEY + copH);
+  block(scene, plain(0xd9dee4, 0.9), 0.16, copH, 4.3, copX, KEY + copH / 2, copZ + 2.75);
+  addObstacle(copX - 0.1, copX + 0.1, barsZ, copZ + 4.9, KEY + copH);
+  for (const side of [-1, 1]) {
+    block(scene, dark, 0.14, 0.2, 0.06, copX + side * 0.9, KEY + 1.25, barsZ - 0.05);                    // the lock on each cell
+    for (const bunkY of [0.45, 1.5]) {                                                                // a bunk bed against the outside wall
+      block(scene, barSteel, 0.9, 0.08, 1.95, copX + side * 6.25, KEY + bunkY, copZ + 3.6);
+      block(scene, plain(0x8a9aa0, 1), 0.85, 0.1, 1.9, copX + side * 6.25, KEY + bunkY + 0.09, copZ + 3.6);
+    }
+    addObstacle(copX + side * 6.25 - 0.47, copX + side * 6.25 + 0.47, copZ + 2.6, copZ + 4.6, KEY + 1.7);
+    block(scene, darkWood, 2.2, 0.42, 0.45, copX + side * 3.2, KEY + 0.21, copZ + 4.5);                 // a bench along the back
+    block(scene, barSteel, 0.3, 0.34, 0.3, copX + side * 0.6, KEY + 0.17, copZ + 4.4);                  // the bucket
+    block(scene, sign(side < 0 ? 'CELL 1' : 'CELL 2', null, '#1c3f8a', '#ffffff', 256, 96), 1.0, 0.36, 0.04, copX + side * 3.4, KEY + copH - 0.55, barsZ - 0.1);
+  }
+  // A patrol car parked beside it.
+  const copCar = makePatrolCar('KINGSTON POLICE  ·  UNIT 3', '3');
+  copCar.position.set(copX - 10.2, KEY + 0.02, copZ - 0.5);
+  copCar.rotation.y = Math.PI;
+  scene.add(copCar);
+  addObstacle(copX - 11.3, copX - 9.1, copZ - 2.9, copZ + 1.9, KEY + 1.7);
+  const police = {
+    officer: { x: copX + 3.4, z: copZ - 1.2, facing: Math.PI, uniform: true, name: 'Sergeant Brown', skin: 'dark' },      // behind the desk
+    posts: [{ x: copX - 2.2, z: copDoor - 2.4, facing: Math.PI }, { x: copX + 2.2, z: copDoor - 2.4, facing: Math.PI }],  // two constables outside the door
+    prisoners: [[-4.6, 3.3, 'Sticky Fingers'], [-1.6, 3.9, 'Old Barnaby'], [1.8, 3.2, 'Long John'], [4.4, 3.9, 'Trouble']].map(([px, pz, name], i) => (
+      { x: copX + px, z: copZ + pz, facing: Math.PI + (i % 2 ? 0.4 : -0.3), prisoner: true, name, skin: i % 2 ? 'tan' : 'dark' })),
+    cell: new THREE.Vector3(copX - 3.2, KEY, copZ + 1.9),                                                               // where somebody arrested stands: in cell 1, with the other two
+    release: new THREE.Vector3(copX, KEY, copDoor - 4.5),
+  };
   // The clinic, at the very end of the street: white, with a red cross, and the doctor behind the desk.
   shop(kx + 9, kz + 37.2, 'KINGSTON CLINIC', 'DOCTOR · NO APPOINTMENT NEEDED', 0xf4f6f6, 'clinic', 'Dr Campbell', [0xf4f6f6, 0xd9382b, 0x9fd0e6, 0xf4f6f6, 0x3fa0e0]);
   const doctor = tills.pop();                                                                          // (he is seen, not shopped at)
@@ -1008,7 +1065,7 @@ export function createAirport(scene) {
     { x: kx + bar[0] - 0.5, z: kz + bar[1] + 1.3, facing: Math.PI, name: 'Desmond', skin: 'tan', drinker: true },
     { x: kx + bar[0] + 2.4, z: kz + bar[1] + 1.25, facing: Math.PI + 0.5, name: 'Delroy', skin: 'dark', drinker: true },
   ];
-  return { planes, stations, barPeople, home, doctor, track, beachFlag, swimmers, islandRoad, junglePalms, tills, shopPeople, islandAtms, altar, barSpot: { x: kx + bar[0] + 0.9, z: kz + bar[1] + 1.6 }, liner: { group: liner, phase: 'away', timer: 8, speed: 0 },
+  return { planes, stations, barPeople, home, doctor, track, police, beachFlag, swimmers, islandRoad, junglePalms, tills, shopPeople, islandAtms, altar, barSpot: { x: kx + bar[0] + 0.9, z: kz + bar[1] + 1.6 }, liner: { group: liner, phase: 'away', timer: 8, speed: 0 },
     shuttle: { group: shuttle, plane: true, own: true, autopilot: true, camFar: 13, name: 'airliner', speed: 0, heading: 0, throttle: 1, takeoff: 0, engine: null, spinners: [], steerers: [] },
     clerk: { x: tx - 10.65, z: tz - 2.3, facing: 0, name: 'Gloria at check-in', special: true, say: 'Press E for a ticket. Or the red propeller plane and the blue jet are out on the apron, if you want to fly yourself.' } };
 }
